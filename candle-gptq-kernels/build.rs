@@ -6,11 +6,18 @@ fn main() -> anyhow::Result<()> {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=kernels/gptq_gemm.cu");
     println!("cargo::rerun-if-changed=kernels/gptq_gemm_tc.cu");
+    println!("cargo::rerun-if-changed=kernels/marlin/marlin_cuda_kernel.cu");
+    println!("cargo::rerun-if-changed=kernels/marlin/marlin_shim.cu");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
 
     let builder = KernelBuilder::new()
-        .source_files(vec!["kernels/gptq_gemm.cu", "kernels/gptq_gemm_tc.cu"])
+        .source_files(vec![
+            "kernels/gptq_gemm.cu",
+            "kernels/gptq_gemm_tc.cu",
+            "kernels/marlin/marlin_cuda_kernel.cu",
+            "kernels/marlin/marlin_shim.cu",
+        ])
         .out_dir(&out_dir)
         .arg("-std=c++17")
         .arg("-O3")

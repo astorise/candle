@@ -155,6 +155,10 @@ pub mod cuda {
         bias: Option<Tensor>,
         bits: usize,
         group_size: usize,
+        /// Pre-repacked `(B, s)` Marlin weights, set at construction when the checkpoint is
+        /// Marlin-eligible (4-bit symmetric, group size 128/-1, aligned shapes). When present, the
+        /// forward pass routes through the vendored Marlin tensor-core kernel.
+        marlin: Option<(Tensor, Tensor)>,
     }
 
     impl GptqLinearCuda {
@@ -198,6 +202,24 @@ pub mod cuda {
             } else {
                 None
             };
+
+            // Try the real Marlin tensor-core kernel for the common 4-bit symmetric case. Marlin
+            // has no act-order support, so only attempt the repack when `g_idx` is sequential
+            // (`g_idx[i] == i / group_size`); `marlin_repack_gptq` checks the remaining
+            // eligibility constraints (symmetry, group size, shape alignment) and returns `None`
+            // otherwise, in which case we keep the generic kernels.
+            let marlin = if cfg.bits == 4 && Self::g_idx_is_sequential(&g_idx, cfg.group_size)? {
+                candle_gptq_kernels::marlin_repack_gptq(
+                    &qweight,
+                    &qzeros,
+                    &scales,
+                    cfg.bits,
+                    cfg.group_size,
+                )?
+            } else {
+                None
+            };
+
             Ok(Self {
                 qweight,
                 qzeros,
@@ -206,7 +228,16 @@ pub mod cuda {
                 bias,
                 bits: cfg.bits,
                 group_size: cfg.group_size,
+                marlin,
             })
+        }
+
+        fn g_idx_is_sequential(g_idx: &Tensor, group_size: usize) -> Result<bool> {
+            let g_idx = g_idx.to_dtype(DType::I32)?.to_vec1::<i32>()?;
+            Ok(g_idx
+                .iter()
+                .enumerate()
+                .all(|(i, &g)| g == (i / group_size) as i32))
         }
     }
 
@@ -215,31 +246,38 @@ pub mod cuda {
             let in_dims = xs.dims();
             let in_dim = *in_dims.last().unwrap();
             let m: usize = in_dims[..in_dims.len() - 1].iter().product();
-            let xs2 = xs
-                .reshape((m, in_dim))?
-                .to_dtype(DType::F32)?
-                .contiguous()?;
-            // 4-bit is the common case for GPTQ checkpoints; route it through the tensor-core
-            // kernel (`gptq_gemm_tensor_core`) instead of the scalar one for better throughput.
-            let ys = if self.bits == 4 {
-                candle_gptq_kernels::gptq_gemm_tensor_core(
-                    &xs2,
-                    &self.qweight,
-                    &self.qzeros,
-                    &self.scales,
-                    &self.g_idx,
-                    self.bits,
-                )?
+            // When the checkpoint is Marlin-eligible, drive the vendored Marlin tensor-core kernel
+            // (fp16 in/out). Otherwise fall back to the fused fp32 kernels: the WMMA tensor-core
+            // one for the 4-bit case, the scalar one for other bit widths. Either way the result
+            // is normalized to f32, matching the existing forward contract.
+            let ys = if let Some((b, s)) = &self.marlin {
+                let xs2 = xs.reshape((m, in_dim))?.to_dtype(DType::F16)?.contiguous()?;
+                candle_gptq_kernels::marlin_gemm(&xs2, b, s)?.to_dtype(DType::F32)?
             } else {
-                candle_gptq_kernels::gptq_gemm(
-                    &xs2,
-                    &self.qweight,
-                    &self.qzeros,
-                    &self.scales,
-                    &self.g_idx,
-                    self.bits,
-                    self.group_size,
-                )?
+                let xs2 = xs
+                    .reshape((m, in_dim))?
+                    .to_dtype(DType::F32)?
+                    .contiguous()?;
+                if self.bits == 4 {
+                    candle_gptq_kernels::gptq_gemm_tensor_core(
+                        &xs2,
+                        &self.qweight,
+                        &self.qzeros,
+                        &self.scales,
+                        &self.g_idx,
+                        self.bits,
+                    )?
+                } else {
+                    candle_gptq_kernels::gptq_gemm(
+                        &xs2,
+                        &self.qweight,
+                        &self.qzeros,
+                        &self.scales,
+                        &self.g_idx,
+                        self.bits,
+                        self.group_size,
+                    )?
+                }
             };
             let out_dim = ys.dim(1)?;
             let mut out_dims = in_dims[..in_dims.len() - 1].to_vec();

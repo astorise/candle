@@ -30,4 +30,22 @@ extern "C" {
         n: c_int,
         n_groups_out: c_int,
     );
+
+    /// Drive the vendored Marlin FP16xINT4 tensor-core GEMM (see `kernels/marlin/`).
+    /// `a`/`c`/`s` are fp16 (`half`) device pointers, `b`/`workspace` are int32. `workspace` must
+    /// hold at least `n / 128 * max_par` zero-initialized entries. Returns 0 on success, 1 for a
+    /// problem-shape error, 2 for an unsupported kernel-shape combination.
+    pub(crate) fn run_marlin_gemm(
+        a: *const core::ffi::c_void,
+        b: *const core::ffi::c_void,
+        c: *mut core::ffi::c_void,
+        s: *const core::ffi::c_void,
+        prob_m: c_int,
+        prob_n: c_int,
+        prob_k: c_int,
+        workspace: *mut core::ffi::c_void,
+        groupsize: c_int,
+        dev: c_int,
+        max_par: c_int,
+    ) -> c_int;
 }

@@ -7,8 +7,15 @@
 //! materialized. Two kernels are provided: [`gptq_gemm`], a shared-memory-tiled kernel with
 //! scalar FP32 accumulation (any `bits` dividing 32), and [`gptq_gemm_tensor_core`], a 4-bit-only
 //! kernel that runs the GEMM inner product on tensor cores via the WMMA API instead.
+//!
+//! For the common 4-bit symmetric case there is also [`marlin_gemm`], an FFI binding to the real
+//! Marlin tensor-core kernel (vendored CUDA C++ under `kernels/marlin/`); use
+//! [`marlin_repack_gptq`] once at load time to convert a checkpoint into Marlin's layout.
 
 mod ffi;
+mod marlin;
+
+pub use marlin::{marlin_gemm, marlin_repack_gptq};
 
 use candle::backend::BackendStorage;
 use candle::cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut};

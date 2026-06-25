@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 candle = { path = "../candle-core", features = ["cuda"], package = "candle-core", version = "0.10.2" }
+half = { version = "2.5.0", features = ["num-traits"] }
 
 [build-dependencies]
 cudaforge = "0.1.2"
