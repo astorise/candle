@@ -1,0 +1,21 @@
+[package]
+name = "candle-gptq-kernels"
+version = "0.10.2"
+edition = "2021"
+
+description = "Fused dequantize+GEMM CUDA kernel for GPTQ-quantized linear layers, for the candle ML framework."
+repository = "https://github.com/huggingface/candle"
+keywords = ["blas", "tensor", "machine-learning"]
+categories = ["science"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+candle = { path = "../candle-core", features = ["cuda"], package = "candle-core", version = "0.10.2" }
+
+[build-dependencies]
+cudaforge = "0.1.2"
+anyhow = { version = "1", features = ["backtrace"] }
+
+[dev-dependencies]
+anyhow = { version = "1", features = ["backtrace"] }
+candle-nn = { path = "../candle-nn", features = ["cuda"] }

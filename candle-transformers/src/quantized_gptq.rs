@@ -3,7 +3,9 @@
 //! GPTQ packs `bits`-wide integers into `i32` words and stores per-group scales and zero
 //! points. This module unpacks those checkpoints into a plain dense `f32` weight matrix on
 //! load so that the rest of the model can use the regular (unquantized) matmul path. There is
-//! no fused/optimized (e.g. Marlin) kernel here, only a CPU dequantization step.
+//! With the `gptq-cuda` feature enabled, [`cuda::GptqLinearCuda`] instead keeps the checkpoint
+//! packed and runs a fused dequantize+GEMM CUDA kernel (`candle-gptq-kernels`) on every forward
+//! pass; there is no CPU fallback for that path.
 
 use candle::{DType, Result, Tensor};
 use candle_nn::{Linear, VarBuilder};
@@ -134,6 +136,108 @@ pub fn gptq_linear(
         None
     };
     Ok(Linear::new(weight, bias))
+}
+
+/// Fused dequantize+GEMM CUDA path: keeps the GPTQ checkpoint packed and runs the kernel from
+/// `candle-gptq-kernels` on every forward pass instead of dequantizing once at load time.
+#[cfg(feature = "gptq-cuda")]
+pub mod cuda {
+    use super::GptqConfig;
+    use candle::{DType, Module, Result, Tensor};
+    use candle_nn::VarBuilder;
+
+    #[derive(Debug, Clone)]
+    pub struct GptqLinearCuda {
+        qweight: Tensor,
+        qzeros: Tensor,
+        scales: Tensor,
+        g_idx: Tensor,
+        bias: Option<Tensor>,
+        bits: usize,
+        group_size: usize,
+    }
+
+    impl GptqLinearCuda {
+        pub fn new(
+            in_dim: usize,
+            out_dim: usize,
+            cfg: GptqConfig,
+            bias: bool,
+            vb: VarBuilder,
+        ) -> Result<Self> {
+            let pack_factor = 32 / cfg.bits;
+            let n_groups = in_dim.div_ceil(cfg.group_size);
+            let qweight = vb.get_with_hints_dtype(
+                (in_dim / pack_factor, out_dim),
+                "qweight",
+                Default::default(),
+                DType::I32,
+            )?;
+            let qzeros = vb.get_with_hints_dtype(
+                (n_groups, out_dim / pack_factor),
+                "qzeros",
+                Default::default(),
+                DType::I32,
+            )?;
+            let scales = vb.get_with_hints_dtype(
+                (n_groups, out_dim),
+                "scales",
+                Default::default(),
+                DType::F32,
+            )?;
+            let g_idx = if vb.contains_tensor("g_idx") {
+                vb.get_with_hints_dtype(in_dim, "g_idx", Default::default(), DType::I32)?
+            } else {
+                let g_idx: Vec<i32> = (0..in_dim as i32)
+                    .map(|i| i / cfg.group_size as i32)
+                    .collect();
+                Tensor::from_vec(g_idx, in_dim, vb.device())?
+            };
+            let bias = if bias {
+                Some(vb.get(out_dim, "bias")?)
+            } else {
+                None
+            };
+            Ok(Self {
+                qweight,
+                qzeros,
+                scales,
+                g_idx,
+                bias,
+                bits: cfg.bits,
+                group_size: cfg.group_size,
+            })
+        }
+    }
+
+    impl Module for GptqLinearCuda {
+        fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+            let in_dims = xs.dims();
+            let in_dim = *in_dims.last().unwrap();
+            let m: usize = in_dims[..in_dims.len() - 1].iter().product();
+            let xs2 = xs
+                .reshape((m, in_dim))?
+                .to_dtype(DType::F32)?
+                .contiguous()?;
+            let ys = candle_gptq_kernels::gptq_gemm(
+                &xs2,
+                &self.qweight,
+                &self.qzeros,
+                &self.scales,
+                &self.g_idx,
+                self.bits,
+                self.group_size,
+            )?;
+            let out_dim = ys.dim(1)?;
+            let mut out_dims = in_dims[..in_dims.len() - 1].to_vec();
+            out_dims.push(out_dim);
+            let ys = ys.reshape(out_dims)?;
+            match &self.bias {
+                None => Ok(ys),
+                Some(bias) => ys.broadcast_add(bias),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
