@@ -42,3 +42,5 @@ jobs:
         run: cargo test --features cuda
       - name: Test (cuda) - candle-onnx
         run: cargo test --manifest-path candle-onnx/Cargo.toml --features cuda -- --include-ignored
+      - name: Build+test (cuda) - fused GPTQ/AWQ/FP8 kernels
+        run: cargo test -p candle-transformers --features cuda,gptq-cuda,awq-cuda,fp8-cuda
