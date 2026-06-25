@@ -4,7 +4,7 @@
 // scale `scale[N / block_size, K / block_size]` (i.e. `W[n,k] = fp8[n,k] * scale[n/bs, k/bs]`),
 // the same convention `candle_transformers::quantized_fp8` dequantizes at load time. This kernel
 // fuses that dequantization into a shared-memory-tiled GEMM instead of materializing a dense
-// weight. This is a textbook tiled GEMM (not a tensor-core / Marlin-style kernel).
+// weight. Accumulation is scalar FP32; it does not use tensor cores.
 #include <cstdint>
 #include <cuda_fp8.h>
 

@@ -4,8 +4,8 @@
 //! Unlike `candle_transformers::quantized_fp8`, which dequantizes a block-wise FP8 checkpoint
 //! into a dense `f32` weight once at load time and then runs the regular matmul, this crate
 //! fuses the per-element dequantization into a shared-memory-tiled GEMM kernel so the dense
-//! weight is never materialized. This is a textbook tiled GEMM (not a tensor-core /
-//! Marlin-style kernel).
+//! weight is never materialized. The GEMM itself is a straightforward shared-memory-tiled
+//! kernel with scalar FP32 accumulation; it does not use tensor cores.
 
 mod ffi;
 

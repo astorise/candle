@@ -1,8 +1,8 @@
 // Fused dequantize + GEMM kernel for GPTQ (AutoGPTQ/GPTQModel) "old" CUDA layout.
 //
-// Computes Y[M,N] = X[M,K] @ dequant(qweight,qzeros,scales,g_idx)[K,N] using a textbook
+// Computes Y[M,N] = X[M,K] @ dequant(qweight,qzeros,scales,g_idx)[K,N] using a
 // shared-memory-tiled GEMM, dequantizing each weight element on the fly while it is staged
-// into shared memory. This is not a tensor-core / Marlin-style kernel: it is a correct,
+// into shared memory. Accumulation is scalar FP32 (no tensor cores): a correct,
 // reasonably cache-friendly fused kernel, one step above "dequantize then call cuBLAS".
 #include <cstdint>
 
