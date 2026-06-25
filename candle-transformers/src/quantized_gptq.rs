@@ -219,15 +219,28 @@ pub mod cuda {
                 .reshape((m, in_dim))?
                 .to_dtype(DType::F32)?
                 .contiguous()?;
-            let ys = candle_gptq_kernels::gptq_gemm(
-                &xs2,
-                &self.qweight,
-                &self.qzeros,
-                &self.scales,
-                &self.g_idx,
-                self.bits,
-                self.group_size,
-            )?;
+            // 4-bit is the common case for GPTQ checkpoints; route it through the tensor-core
+            // kernel (`gptq_gemm_tensor_core`) instead of the scalar one for better throughput.
+            let ys = if self.bits == 4 {
+                candle_gptq_kernels::gptq_gemm_tensor_core(
+                    &xs2,
+                    &self.qweight,
+                    &self.qzeros,
+                    &self.scales,
+                    &self.g_idx,
+                    self.bits,
+                )?
+            } else {
+                candle_gptq_kernels::gptq_gemm(
+                    &xs2,
+                    &self.qweight,
+                    &self.qzeros,
+                    &self.scales,
+                    &self.g_idx,
+                    self.bits,
+                    self.group_size,
+                )?
+            };
             let out_dim = ys.dim(1)?;
             let mut out_dims = in_dims[..in_dims.len() - 1].to_vec();
             out_dims.push(out_dim);

@@ -44,3 +44,5 @@ jobs:
         run: cargo test --manifest-path candle-onnx/Cargo.toml --features cuda -- --include-ignored
       - name: Build+test (cuda) - fused GPTQ/AWQ/FP8 kernels
         run: cargo test -p candle-transformers --features cuda,gptq-cuda,awq-cuda,fp8-cuda
+      - name: Test (cuda) - GPTQ tensor-core kernel correctness
+        run: cargo test --manifest-path candle-gptq-kernels/Cargo.toml

@@ -5,11 +5,12 @@ use std::path::PathBuf;
 fn main() -> anyhow::Result<()> {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=kernels/gptq_gemm.cu");
+    println!("cargo::rerun-if-changed=kernels/gptq_gemm_tc.cu");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
 
     let builder = KernelBuilder::new()
-        .source_files(vec!["kernels/gptq_gemm.cu"])
+        .source_files(vec!["kernels/gptq_gemm.cu", "kernels/gptq_gemm_tc.cu"])
         .out_dir(&out_dir)
         .arg("-std=c++17")
         .arg("-O3")
