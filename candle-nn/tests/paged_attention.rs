@@ -104,7 +104,24 @@ fn run_case(
     block_size: usize,
     ctx_lens: &[usize],
 ) -> Result<()> {
-    let device = Device::Cpu;
+    run_case_on(
+        &Device::Cpu,
+        num_kv_heads,
+        group,
+        head_dim,
+        block_size,
+        ctx_lens,
+    )
+}
+
+fn run_case_on(
+    device: &Device,
+    num_kv_heads: usize,
+    group: usize,
+    head_dim: usize,
+    block_size: usize,
+    ctx_lens: &[usize],
+) -> Result<()> {
     let num_heads = num_kv_heads * group;
     let num_seqs = ctx_lens.len();
     let scale = 1.0f32 / (head_dim as f32).sqrt();
@@ -114,7 +131,7 @@ fn run_case(
         let data: Vec<f32> = (0..n)
             .map(|i| ((i as f32 * 0.123 + seed).sin()) * 0.5)
             .collect();
-        Tensor::from_vec(data, n, &device)
+        Tensor::from_vec(data, n, device)
     };
 
     let q = gen(num_seqs * num_heads * head_dim, 0.0)?.reshape((num_seqs, num_heads, head_dim))?;
@@ -148,7 +165,7 @@ fn run_case(
         block_size,
         num_kv_heads,
         head_dim,
-        &device,
+        device,
     )?;
 
     let out = paged_attention(
@@ -240,4 +257,108 @@ fn block_allocator_pools_blocks() {
     alloc.free(b);
     assert_eq!(alloc.num_free(), 1);
     assert_eq!(alloc.allocate(), Some(b));
+}
+
+// ------------------------------------------------------------------------
+// CUDA path. These exercise `paged_attention` / `reshape_and_cache` on an
+// actual GPU device and are run by the `ci_cuda` GPU runner workflow
+// (`cargo test --features cuda`). They are compiled out on non-CUDA builds.
+// ------------------------------------------------------------------------
+
+#[cfg(feature = "cuda")]
+mod cuda {
+    use super::*;
+
+    fn cuda_device() -> Device {
+        Device::new_cuda(0).expect("CUDA device 0 must be available on the GPU runner")
+    }
+
+    #[test]
+    fn paged_matches_dense_mha_cuda() -> Result<()> {
+        run_case_on(&cuda_device(), 4, 1, 8, 4, &[4, 7, 1, 16])
+    }
+
+    #[test]
+    fn paged_matches_dense_gqa_cuda() -> Result<()> {
+        run_case_on(&cuda_device(), 2, 4, 16, 8, &[10, 3, 20])
+    }
+
+    #[test]
+    fn paged_matches_dense_mqa_block_size_one_cuda() -> Result<()> {
+        run_case_on(&cuda_device(), 1, 8, 8, 1, &[5, 9])
+    }
+
+    /// The implementation is device-agnostic, so the CUDA result must match
+    /// the CPU result bit-for-tolerance, not just the dense reference.
+    #[test]
+    fn paged_cuda_matches_cpu() -> Result<()> {
+        let (num_kv_heads, group, head_dim, block_size) = (2, 4, 16, 8);
+        let num_heads = num_kv_heads * group;
+        let ctx_lens = [10usize, 3, 20];
+        let num_seqs = ctx_lens.len();
+        let scale = 1.0f32 / (head_dim as f32).sqrt();
+
+        let gen = |dev: &Device, n: usize, seed: f32| -> Result<Tensor> {
+            let data: Vec<f32> = (0..n)
+                .map(|i| ((i as f32 * 0.123 + seed).sin()) * 0.5)
+                .collect();
+            Tensor::from_vec(data, n, dev)
+        };
+
+        let run = |dev: &Device| -> Result<Tensor> {
+            let q = gen(dev, num_seqs * num_heads * head_dim, 0.0)?
+                .reshape((num_seqs, num_heads, head_dim))?;
+            let mut keys = Vec::new();
+            let mut values = Vec::new();
+            for (s, &ctx) in ctx_lens.iter().enumerate() {
+                keys.push(
+                    gen(dev, ctx * num_kv_heads * head_dim, 1.0 + s as f32)?.reshape((
+                        ctx,
+                        num_kv_heads,
+                        head_dim,
+                    ))?,
+                );
+                values.push(
+                    gen(dev, ctx * num_kv_heads * head_dim, 7.0 + s as f32)?.reshape((
+                        ctx,
+                        num_kv_heads,
+                        head_dim,
+                    ))?,
+                );
+            }
+            let total_blocks: usize = ctx_lens.iter().map(|c| c.div_ceil(block_size)).sum();
+            let (k_cache, v_cache, block_tables, context_lens) = build_paged_cache(
+                &keys,
+                &values,
+                total_blocks + 2,
+                block_size,
+                num_kv_heads,
+                head_dim,
+                dev,
+            )?;
+            paged_attention(
+                &q,
+                &k_cache,
+                &v_cache,
+                &block_tables,
+                &context_lens,
+                block_size,
+                scale,
+                None,
+            )
+        };
+
+        let cpu = run(&Device::Cpu)?;
+        let gpu = run(&cuda_device())?.to_device(&Device::Cpu)?;
+        let diff = (cpu - gpu)?
+            .abs()?
+            .flatten_all()?
+            .max(0)?
+            .to_scalar::<f32>()?;
+        assert!(
+            diff < EPS,
+            "CUDA vs CPU paged attention diff {diff} exceeds {EPS}"
+        );
+        Ok(())
+    }
 }
