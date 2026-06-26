@@ -28,6 +28,11 @@ jobs:
       security-events: write
     env:
       CUDA_COMPUTE_CAP: 86
+      # Scoping the test step to GPU-relevant crates (below) wasn't enough on its own: this
+      # runner still OOM-kills (exit 137) while compiling candle-transformers at full rustc
+      # parallelism. Cap parallel rustc jobs to reduce peak memory; the two fixes address
+      # different causes (crate count vs. per-crate codegen parallelism) and are both needed.
+      CARGO_BUILD_JOBS: 2
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
