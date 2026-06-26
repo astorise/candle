@@ -1,9 +1,18 @@
 // Build script compiling the AWQ fused dequant+GEMM CUDA kernel into a static lib.
-use cudaforge::KernelBuilder;
+//
+// The CUDA compile only runs when the `cuda` feature is enabled. With `--features metal` and no
+// CUDA the crate has no native build step (the Metal kernel is compiled at runtime).
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
     println!("cargo::rerun-if-changed=build.rs");
+
+    if std::env::var("CARGO_FEATURE_CUDA").is_err() {
+        return Ok(());
+    }
+
+    use cudaforge::KernelBuilder;
+
     println!("cargo::rerun-if-changed=kernels/awq_gemm.cu");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));

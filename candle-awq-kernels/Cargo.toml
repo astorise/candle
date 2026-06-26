@@ -10,7 +10,16 @@ categories = ["science"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-candle = { path = "../candle-core", features = ["cuda"], package = "candle-core", version = "0.10.2" }
+candle = { path = "../candle-core", package = "candle-core", version = "0.10.2" }
+candle-metal-kernels = { path = "../candle-metal-kernels", version = "0.10.2", optional = true }
+objc2-metal = { version = "0.3.2", optional = true }
+
+[features]
+default = ["cuda"]
+# Fused dequant+GEMM CUDA kernel (AWQ 4-bit GEMM layout).
+cuda = ["candle/cuda"]
+# Fused dequant+GEMM Metal kernel (AWQ 4-bit GEMM layout) for Apple Silicon.
+metal = ["candle/metal", "dep:candle-metal-kernels", "dep:objc2-metal"]
 
 [build-dependencies]
 cudaforge = "0.1.2"
@@ -18,4 +27,4 @@ anyhow = { version = "1", features = ["backtrace"] }
 
 [dev-dependencies]
 anyhow = { version = "1", features = ["backtrace"] }
-candle-nn = { path = "../candle-nn", features = ["cuda"] }
+candle-nn = { path = "../candle-nn" }

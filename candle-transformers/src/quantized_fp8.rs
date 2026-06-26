@@ -162,6 +162,87 @@ pub mod cuda {
     }
 }
 
+/// Fused dequantize+GEMM Metal path: keeps the block-wise FP8 checkpoint packed and runs the
+/// Metal kernel from `candle-fp8-kernels` on every forward pass (scalar tiled GEMM, E4M3 decoded
+/// in-shader).
+#[cfg(feature = "fp8-metal")]
+pub mod metal {
+    use super::Fp8BlockConfig;
+    use candle::{DType, Module, Result, Tensor};
+    use candle_nn::VarBuilder;
+
+    #[derive(Debug, Clone)]
+    pub struct Fp8BlockLinearMetal {
+        weight: Tensor,
+        scale: Tensor,
+        bias: Option<Tensor>,
+        block_size: usize,
+    }
+
+    impl Fp8BlockLinearMetal {
+        pub fn new(
+            in_dim: usize,
+            out_dim: usize,
+            cfg: Fp8BlockConfig,
+            bias: bool,
+            vb: VarBuilder,
+        ) -> Result<Self> {
+            let weight = vb.get_with_hints_dtype(
+                (out_dim, in_dim),
+                "weight",
+                Default::default(),
+                DType::F8E4M3,
+            )?;
+            let scale = vb.get_with_hints_dtype(
+                (
+                    out_dim.div_ceil(cfg.block_size),
+                    in_dim.div_ceil(cfg.block_size),
+                ),
+                "weight_scale_inv",
+                Default::default(),
+                DType::F32,
+            )?;
+            let bias = if bias {
+                Some(vb.get(out_dim, "bias")?)
+            } else {
+                None
+            };
+            Ok(Self {
+                weight,
+                scale,
+                bias,
+                block_size: cfg.block_size,
+            })
+        }
+    }
+
+    impl Module for Fp8BlockLinearMetal {
+        fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+            let in_dims = xs.dims();
+            let in_dim = *in_dims.last().unwrap();
+            let m: usize = in_dims[..in_dims.len() - 1].iter().product();
+            let xs2 = xs
+                .reshape((m, in_dim))?
+                .to_dtype(DType::F32)?
+                .contiguous()?;
+            let ys = candle_fp8_kernels::fp8_block_gemm(
+                &xs2,
+                &self.weight,
+                &self.scale,
+                self.block_size,
+            )?;
+            let out_dim = ys.dim(1)?;
+            let mut out_dims = in_dims[..in_dims.len() - 1].to_vec();
+            out_dims.push(out_dim);
+            let ys = ys.reshape(out_dims)?;
+            match &self.bias {
+                None => Ok(ys),
+                Some(bias) => ys.broadcast_add(bias),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

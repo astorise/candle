@@ -8,11 +8,19 @@
 //! is a straightforward shared-memory-tiled kernel with scalar FP32 accumulation; it does not
 //! use tensor cores.
 
+#[cfg(feature = "cuda")]
 mod ffi;
 
-use candle::backend::BackendStorage;
-use candle::cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut};
-use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Tensor};
+#[cfg(feature = "metal")]
+mod metal;
+
+use candle::{CpuStorage, Layout, Result, Shape, Tensor};
+#[cfg(feature = "cuda")]
+use candle::{
+    backend::BackendStorage,
+    cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut},
+    CudaStorage, DType,
+};
 
 /// `x.apply_op3(qweight, qzeros, op)`: `scales` rides along as an extra field, mirroring the
 /// pattern `candle-flash-attn` uses for `alibi_slopes` (CustomOp only supports 3 tensors).
@@ -22,7 +30,7 @@ pub struct AwqGemm {
 }
 
 const AWQ_BITS: usize = 4;
-const AWQ_PACK_FACTOR: usize = 32 / AWQ_BITS;
+pub(crate) const AWQ_PACK_FACTOR: usize = 32 / AWQ_BITS;
 
 impl candle::CustomOp3 for AwqGemm {
     fn name(&self) -> &'static str {
@@ -43,6 +51,20 @@ impl candle::CustomOp3 for AwqGemm {
         )
     }
 
+    #[cfg(feature = "metal")]
+    fn metal_fwd(
+        &self,
+        x: &candle::MetalStorage,
+        x_l: &Layout,
+        qweight: &candle::MetalStorage,
+        qweight_l: &Layout,
+        qzeros: &candle::MetalStorage,
+        qzeros_l: &Layout,
+    ) -> Result<(candle::MetalStorage, Shape)> {
+        metal::awq_gemm_metal_fwd(self, x, x_l, qweight, qweight_l, qzeros, qzeros_l)
+    }
+
+    #[cfg(feature = "cuda")]
     fn cuda_fwd(
         &self,
         x: &CudaStorage,
@@ -150,4 +172,111 @@ pub fn awq_gemm(
         group_size,
     };
     x.apply_op3(qweight, qzeros, op)
+}
+
+#[cfg(all(test, feature = "metal"))]
+mod metal_tests {
+    use super::*;
+    use candle::Device;
+
+    const AWQ_ORDER: [usize; 8] = [0, 4, 1, 5, 2, 6, 3, 7];
+
+    /// Plain-Rust reference (f64 accumulation), independent of the Metal kernel.
+    fn dequant_matmul_ref(
+        x: &[f32],
+        qweight: &[i32],
+        qzeros: &[i32],
+        scales: &[f32],
+        m: usize,
+        k: usize,
+        n: usize,
+        group_size: usize,
+    ) -> Vec<f32> {
+        let n_packed = n / AWQ_PACK_FACTOR;
+        let mut y = vec![0f32; m * n];
+        for row in 0..m {
+            for col in 0..n {
+                let col_group = col / AWQ_PACK_FACTOR;
+                let j = col % AWQ_PACK_FACTOR;
+                let shift = (AWQ_ORDER[j] * AWQ_BITS) as i32;
+                let mut acc = 0f64;
+                for kk in 0..k {
+                    let g = kk / group_size;
+                    let q = (qweight[kk * n_packed + col_group] >> shift) & 0xF;
+                    let z = (qzeros[g * n_packed + col_group] >> shift) & 0xF;
+                    let s = scales[g * n + col];
+                    let w = (q - z) as f32 * s;
+                    acc += x[row * k + kk] as f64 * w as f64;
+                }
+                y[row * n + col] = acc as f32;
+            }
+        }
+        y
+    }
+
+    /// Pack 8 output-axis nibbles into one i32 using AWQ's order map.
+    fn pack_awq(vals: [i32; 8]) -> i32 {
+        let mut w = 0i32;
+        for (j, &v) in vals.iter().enumerate() {
+            w |= (v & 0xF) << (AWQ_ORDER[j] * AWQ_BITS);
+        }
+        w
+    }
+
+    /// Numeric correctness test for the AWQ Metal kernel, cross-checked against an independent
+    /// f64 reference. Requires a Metal device; run on the macOS GPU CI runner.
+    #[test]
+    fn awq_gemm_metal_matches_reference() -> Result<()> {
+        let device = Device::new_metal(0)?;
+        let m = 17; // not a multiple of TILE=16
+        let k = 32;
+        let n = 24; // multiple of pack_factor=8, not a multiple of TILE=16
+        let group_size = 16;
+        let n_groups = k / group_size;
+        let n_packed = n / AWQ_PACK_FACTOR;
+
+        let x: Vec<f32> = (0..m * k).map(|i| ((i % 13) as f32 - 6.0) * 0.1).collect();
+        let qweight: Vec<i32> = (0..k * n_packed)
+            .map(|i| {
+                let mut vals = [0i32; 8];
+                for (j, slot) in vals.iter_mut().enumerate() {
+                    *slot = ((i * 7 + j * 3) % 16) as i32;
+                }
+                pack_awq(vals)
+            })
+            .collect();
+        let qzeros: Vec<i32> = (0..n_groups * n_packed)
+            .map(|i| {
+                let mut vals = [0i32; 8];
+                for (j, slot) in vals.iter_mut().enumerate() {
+                    *slot = ((i * 5 + j) % 16) as i32;
+                }
+                pack_awq(vals)
+            })
+            .collect();
+        let scales: Vec<f32> = (0..n_groups * n)
+            .map(|i| 0.05 + (i % 7) as f32 * 0.01)
+            .collect();
+
+        let expected = dequant_matmul_ref(&x, &qweight, &qzeros, &scales, m, k, n, group_size);
+
+        let x_t = Tensor::from_vec(x, (m, k), &device)?;
+        let qweight_t = Tensor::from_vec(qweight, (k, n_packed), &device)?;
+        let qzeros_t = Tensor::from_vec(qzeros, (n_groups, n_packed), &device)?;
+        let scales_t = Tensor::from_vec(scales, (n_groups, n), &device)?;
+
+        let y = awq_gemm(&x_t, &qweight_t, &qzeros_t, &scales_t, group_size)?.to_vec2::<f32>()?;
+
+        for row in 0..m {
+            for col in 0..n {
+                let exp = expected[row * n + col];
+                assert!(
+                    (y[row][col] - exp).abs() < 1e-3 + 1e-5 * exp.abs(),
+                    "metal mismatch at ({row},{col}): {} vs {exp}",
+                    y[row][col]
+                );
+            }
+        }
+        Ok(())
+    }
 }

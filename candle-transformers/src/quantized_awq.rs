@@ -204,6 +204,100 @@ pub mod cuda {
     }
 }
 
+/// Fused dequantize+GEMM Metal path: keeps the AWQ checkpoint packed and runs the Metal kernel
+/// from `candle-awq-kernels` on every forward pass (scalar tiled GEMM, 4-bit GEMM layout).
+#[cfg(feature = "awq-metal")]
+pub mod metal {
+    use super::AwqConfig;
+    use candle::{DType, Module, Result, Tensor};
+    use candle_nn::VarBuilder;
+
+    #[derive(Debug, Clone)]
+    pub struct AwqLinearMetal {
+        qweight: Tensor,
+        qzeros: Tensor,
+        scales: Tensor,
+        bias: Option<Tensor>,
+        group_size: usize,
+    }
+
+    impl AwqLinearMetal {
+        pub fn new(
+            in_dim: usize,
+            out_dim: usize,
+            cfg: AwqConfig,
+            bias: bool,
+            vb: VarBuilder,
+        ) -> Result<Self> {
+            if cfg.bits != 4 {
+                candle::bail!(
+                    "awq-metal: only 4-bit GEMM layout is supported, got {}",
+                    cfg.bits
+                );
+            }
+            let pack_factor = 32 / cfg.bits;
+            let n_groups = in_dim.div_ceil(cfg.group_size);
+            let qweight = vb.get_with_hints_dtype(
+                (in_dim, out_dim / pack_factor),
+                "qweight",
+                Default::default(),
+                DType::I32,
+            )?;
+            let qzeros = vb.get_with_hints_dtype(
+                (n_groups, out_dim / pack_factor),
+                "qzeros",
+                Default::default(),
+                DType::I32,
+            )?;
+            let scales = vb.get_with_hints_dtype(
+                (n_groups, out_dim),
+                "scales",
+                Default::default(),
+                DType::F32,
+            )?;
+            let bias = if bias {
+                Some(vb.get(out_dim, "bias")?)
+            } else {
+                None
+            };
+            Ok(Self {
+                qweight,
+                qzeros,
+                scales,
+                bias,
+                group_size: cfg.group_size,
+            })
+        }
+    }
+
+    impl Module for AwqLinearMetal {
+        fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+            let in_dims = xs.dims();
+            let in_dim = *in_dims.last().unwrap();
+            let m: usize = in_dims[..in_dims.len() - 1].iter().product();
+            let xs2 = xs
+                .reshape((m, in_dim))?
+                .to_dtype(DType::F32)?
+                .contiguous()?;
+            let ys = candle_awq_kernels::awq_gemm(
+                &xs2,
+                &self.qweight,
+                &self.qzeros,
+                &self.scales,
+                self.group_size,
+            )?;
+            let out_dim = ys.dim(1)?;
+            let mut out_dims = in_dims[..in_dims.len() - 1].to_vec();
+            out_dims.push(out_dim);
+            let ys = ys.reshape(out_dims)?;
+            match &self.bias {
+                None => Ok(ys),
+                Some(bias) => ys.broadcast_add(bias),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

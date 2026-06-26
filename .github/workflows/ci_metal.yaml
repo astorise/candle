@@ -36,4 +36,8 @@ jobs:
       - name: Test (metal) - paged attention
         run: cargo test -p candle-nn --features metal --test paged_attention -- --nocapture
       - name: Test (metal) - GPTQ fused dequant+GEMM kernel
-        run: cargo test -p candle-gptq-kernels --no-default-features --features metal -- --nocapture
+        run: cargo test --manifest-path candle-gptq-kernels/Cargo.toml --no-default-features --features metal -- --nocapture
+      - name: Test (metal) - AWQ fused dequant+GEMM kernel
+        run: cargo test --manifest-path candle-awq-kernels/Cargo.toml --no-default-features --features metal -- --nocapture
+      - name: Test (metal) - block-wise FP8 fused dequant+GEMM kernel
+        run: cargo test --manifest-path candle-fp8-kernels/Cargo.toml --no-default-features --features metal -- --nocapture

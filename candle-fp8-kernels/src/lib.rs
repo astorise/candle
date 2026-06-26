@@ -7,11 +7,19 @@
 //! weight is never materialized. The GEMM itself is a straightforward shared-memory-tiled
 //! kernel with scalar FP32 accumulation; it does not use tensor cores.
 
+#[cfg(feature = "cuda")]
 mod ffi;
 
-use candle::backend::BackendStorage;
-use candle::cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut};
-use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Tensor};
+#[cfg(feature = "metal")]
+mod metal;
+
+use candle::{CpuStorage, Layout, Result, Shape, Tensor};
+#[cfg(feature = "cuda")]
+use candle::{
+    backend::BackendStorage,
+    cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut},
+    CudaStorage, DType,
+};
 
 pub struct Fp8BlockGemm {
     pub block_size: usize,
@@ -36,6 +44,20 @@ impl candle::CustomOp3 for Fp8BlockGemm {
         )
     }
 
+    #[cfg(feature = "metal")]
+    fn metal_fwd(
+        &self,
+        x: &candle::MetalStorage,
+        x_l: &Layout,
+        w: &candle::MetalStorage,
+        w_l: &Layout,
+        scale: &candle::MetalStorage,
+        scale_l: &Layout,
+    ) -> Result<(candle::MetalStorage, Shape)> {
+        metal::fp8_block_gemm_metal_fwd(self, x, x_l, w, w_l, scale, scale_l)
+    }
+
+    #[cfg(feature = "cuda")]
     fn cuda_fwd(
         &self,
         x: &CudaStorage,
@@ -136,4 +158,70 @@ pub fn fp8_block_gemm(
 ) -> Result<Tensor> {
     let op = Fp8BlockGemm { block_size };
     x.apply_op3(weight, scale, op)
+}
+
+#[cfg(all(test, feature = "metal"))]
+mod metal_tests {
+    use super::*;
+    use candle::{DType, Device};
+
+    /// Numeric correctness test for the block-wise FP8 Metal kernel, cross-checked against an
+    /// independent f64 reference. Weight values are chosen to be exactly representable in E4M3 so
+    /// the byte round-trip is lossless and the shader's E4M3 decode must match exactly. Requires a
+    /// Metal device; run on the macOS GPU CI runner.
+    #[test]
+    fn fp8_block_gemm_metal_matches_reference() -> Result<()> {
+        let device = Device::new_metal(0)?;
+        let m = 17; // not a multiple of TILE=16
+        let k = 40; // not a multiple of TILE=16
+        let n = 24; // not a multiple of TILE=16
+        let block_size = 16;
+        let scale_rows = n.div_ceil(block_size);
+        let scale_cols = k.div_ceil(block_size);
+
+        // E4M3-exact magnitudes so f32 -> F8E4M3 -> f32 is lossless.
+        let reps = [
+            -8.0f32, -4.0, -2.0, -1.5, -1.0, -0.5, -0.25, 0.25, 0.5, 1.0, 1.5, 2.0, 4.0, 8.0,
+        ];
+        let x: Vec<f32> = (0..m * k).map(|i| ((i % 13) as f32 - 6.0) * 0.1).collect();
+        let w: Vec<f32> = (0..n * k).map(|i| reps[(i * 7) % reps.len()]).collect();
+        let scale: Vec<f32> = (0..scale_rows * scale_cols)
+            .map(|i| 0.5 + (i % 5) as f32 * 0.25)
+            .collect();
+
+        let mut expected = vec![0f32; m * n];
+        for row in 0..m {
+            for col in 0..n {
+                let mut acc = 0f64;
+                for kk in 0..k {
+                    let wv = w[col * k + kk];
+                    let s = scale[(col / block_size) * scale_cols + kk / block_size];
+                    acc += x[row * k + kk] as f64 * (wv * s) as f64;
+                }
+                expected[row * n + col] = acc as f32;
+            }
+        }
+
+        let x_t = Tensor::from_vec(x, (m, k), &device)?;
+        // Metal has no f32 -> F8E4M3 cast kernel, so quantize on CPU and move the bytes to the GPU
+        // (the same E4M3 bytes a real checkpoint would carry).
+        let w_t = Tensor::from_vec(w, (n, k), &Device::Cpu)?
+            .to_dtype(DType::F8E4M3)?
+            .to_device(&device)?;
+        let scale_t = Tensor::from_vec(scale, (scale_rows, scale_cols), &device)?;
+
+        let y = fp8_block_gemm(&x_t, &w_t, &scale_t, block_size)?.to_vec2::<f32>()?;
+
+        for row in 0..m {
+            for col in 0..n {
+                let exp = expected[row * n + col];
+                assert!(
+                    (y[row][col] - exp).abs() < 1e-3 + 1e-4 * exp.abs(),
+                    "metal mismatch at ({row},{col}): {} vs {exp}",
+                    y[row][col]
+                );
+            }
+        }
+        Ok(())
+    }
 }
