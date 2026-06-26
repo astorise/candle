@@ -28,6 +28,10 @@ jobs:
       security-events: write
     env:
       CUDA_COMPUTE_CAP: 86
+      # The workspace `cargo test` pulls in dozens of unrelated crates (wasm examples, pyo3,
+      # yew, tensor-tools, ...); building them at full parallelism has been OOM-killing the
+      # self-hosted GPU runner (exit code 137). Cap parallel rustc jobs to reduce peak memory.
+      CARGO_BUILD_JOBS: 2
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
