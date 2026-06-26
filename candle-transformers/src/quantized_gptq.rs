@@ -424,8 +424,8 @@ mod tests {
         let mut qweight_data = vec![0i32; (in_dim / pack_factor) * out_dim];
         for col in 0..out_dim {
             let mut packed = 0i32;
-            for row in 0..in_dim {
-                packed |= q[row][col] << (row * bits);
+            for (row, q_row) in q.iter().enumerate() {
+                packed |= q_row[col] << (row * bits);
             }
             qweight_data[col] = packed;
         }
