@@ -173,8 +173,8 @@ mod metal_tests {
     fn fp8_block_gemm_metal_matches_reference() -> Result<()> {
         let device = Device::new_metal(0)?;
         let m = 17; // not a multiple of TILE=16
-        let k = 40; // not a multiple of TILE=16
-        let n = 24; // not a multiple of TILE=16
+        let k: usize = 40; // not a multiple of TILE=16
+        let n: usize = 24; // not a multiple of TILE=16
         let block_size = 16;
         let scale_rows = n.div_ceil(block_size);
         let scale_cols = k.div_ceil(block_size);

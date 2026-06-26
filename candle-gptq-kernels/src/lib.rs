@@ -399,7 +399,7 @@ mod tests {
         let bits = 4;
         let pack_factor = 32 / bits;
         let m = 17; // not a multiple of WMMA_M=16
-        let k = 48; // multiple of pack_factor=8, not a multiple of WMMA_K=16
+        let k: usize = 48; // multiple of pack_factor=8, not a multiple of WMMA_K=16
         let n = 24; // not a multiple of WMMA_N=16
         let group_size = 16;
         let n_groups = k.div_ceil(group_size);
@@ -521,7 +521,7 @@ mod metal_tests {
         let bits = 4;
         let pack_factor = 32 / bits;
         let m = 17; // not a multiple of TILE=16
-        let k = 48; // multiple of pack_factor=8, not a multiple of TILE=16
+        let k: usize = 48; // multiple of pack_factor=8, not a multiple of TILE=16
         let n = 24; // not a multiple of TILE=16
         let group_size = 16;
         let n_groups = k.div_ceil(group_size);
