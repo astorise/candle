@@ -2,17 +2,20 @@
 //! checkpoint (e.g. `Qwen/Qwen2-0.5B-Instruct-GPTQ-Int4` on the Hugging Face Hub).
 //!
 //! This mirrors [`crate::models::qwen2`] but routes every attention/MLP projection through
-//! [`crate::quantized_gptq::gptq_linear`], which reads the checkpoint's packed
-//! `qweight`/`qzeros`/`scales`/(optional `g_idx`) tensors and dequantizes them once at load time.
-//! `embed_tokens`, the RMSNorm layers, and (when present) `lm_head` stay dense, matching how
-//! GPTQ checkpoints are actually exported. Real checkpoints store a `bias` tensor on every
-//! quantized projection (unlike the dense Qwen2 model, which omits bias on `o_proj` and the MLP
-//! projections), so all projections here are built with `bias: true`.
+//! [`crate::quantized_linear::QuantizedLinear`] (GPTQ format), which reads the checkpoint's
+//! packed `qweight`/`qzeros`/`scales`/(optional `g_idx`) tensors and either dequantizes them once
+//! at load time or, when a matching `gptq-cuda`/`gptq-metal` feature is enabled, keeps them
+//! packed behind a fused dequantize+GEMM kernel. `embed_tokens`, the RMSNorm layers, and (when
+//! present) `lm_head` stay dense, matching how GPTQ checkpoints are actually exported. Real
+//! checkpoints store a `bias` tensor on every quantized projection (unlike the dense Qwen2 model,
+//! which omits bias on `o_proj` and the MLP projections), so all projections here are built with
+//! `bias: true`.
 
 use crate::models::with_tracing::{linear_no_bias, Linear as TracingLinear, RmsNorm};
-use crate::quantized_gptq::{gptq_linear, GptqConfig};
+use crate::quantized_gptq::GptqConfig;
+use crate::quantized_linear::{QuantMethod, QuantizedLinear};
 use candle::{DType, Device, Module, Result, Tensor, D};
-use candle_nn::{Activation, Linear, VarBuilder};
+use candle_nn::{Activation, VarBuilder};
 use std::sync::Arc;
 
 pub use crate::models::qwen2::Config;
@@ -61,9 +64,9 @@ impl RotaryEmbedding {
 #[derive(Debug, Clone)]
 #[allow(clippy::upper_case_acronyms)]
 struct MLP {
-    gate_proj: Linear,
-    up_proj: Linear,
-    down_proj: Linear,
+    gate_proj: QuantizedLinear,
+    up_proj: QuantizedLinear,
+    down_proj: QuantizedLinear,
     act_fn: Activation,
 }
 
@@ -71,21 +74,13 @@ impl MLP {
     fn new(cfg: &Config, gptq_cfg: GptqConfig, vb: VarBuilder) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let intermediate_sz = cfg.intermediate_size;
-        let gate_proj = gptq_linear(
-            hidden_sz,
-            intermediate_sz,
-            gptq_cfg,
-            true,
-            vb.pp("gate_proj"),
-        )?;
-        let up_proj = gptq_linear(hidden_sz, intermediate_sz, gptq_cfg, true, vb.pp("up_proj"))?;
-        let down_proj = gptq_linear(
-            intermediate_sz,
-            hidden_sz,
-            gptq_cfg,
-            true,
-            vb.pp("down_proj"),
-        )?;
+        let method = QuantMethod::Gptq(gptq_cfg);
+        let gate_proj =
+            QuantizedLinear::load(hidden_sz, intermediate_sz, method, true, vb.pp("gate_proj"))?;
+        let up_proj =
+            QuantizedLinear::load(hidden_sz, intermediate_sz, method, true, vb.pp("up_proj"))?;
+        let down_proj =
+            QuantizedLinear::load(intermediate_sz, hidden_sz, method, true, vb.pp("down_proj"))?;
         Ok(Self {
             gate_proj,
             up_proj,
@@ -105,10 +100,10 @@ impl Module for MLP {
 
 #[derive(Debug, Clone)]
 struct Attention {
-    q_proj: Linear,
-    k_proj: Linear,
-    v_proj: Linear,
-    o_proj: Linear,
+    q_proj: QuantizedLinear,
+    k_proj: QuantizedLinear,
+    v_proj: QuantizedLinear,
+    o_proj: QuantizedLinear,
     num_heads: usize,
     num_kv_heads: usize,
     num_kv_groups: usize,
@@ -130,31 +125,32 @@ impl Attention {
         let num_kv_heads = cfg.num_key_value_heads;
         let num_kv_groups = num_heads / num_kv_heads;
         let head_dim = hidden_sz / num_heads;
-        let q_proj = gptq_linear(
+        let method = QuantMethod::Gptq(gptq_cfg);
+        let q_proj = QuantizedLinear::load(
             hidden_sz,
             num_heads * head_dim,
-            gptq_cfg,
+            method,
             true,
             vb.pp("q_proj"),
         )?;
-        let k_proj = gptq_linear(
+        let k_proj = QuantizedLinear::load(
             hidden_sz,
             num_kv_heads * head_dim,
-            gptq_cfg,
+            method,
             true,
             vb.pp("k_proj"),
         )?;
-        let v_proj = gptq_linear(
+        let v_proj = QuantizedLinear::load(
             hidden_sz,
             num_kv_heads * head_dim,
-            gptq_cfg,
+            method,
             true,
             vb.pp("v_proj"),
         )?;
-        let o_proj = gptq_linear(
+        let o_proj = QuantizedLinear::load(
             num_heads * head_dim,
             hidden_sz,
-            gptq_cfg,
+            method,
             true,
             vb.pp("o_proj"),
         )?;

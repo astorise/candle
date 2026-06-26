@@ -6,6 +6,7 @@ pub mod pipelines;
 pub mod quantized_awq;
 pub mod quantized_fp8;
 pub mod quantized_gptq;
+pub mod quantized_linear;
 pub mod quantized_nn;
 pub mod quantized_var_builder;
 pub mod utils;
