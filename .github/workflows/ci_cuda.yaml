@@ -28,10 +28,6 @@ jobs:
       security-events: write
     env:
       CUDA_COMPUTE_CAP: 86
-      # The workspace `cargo test` pulls in dozens of unrelated crates (wasm examples, pyo3,
-      # yew, tensor-tools, ...); building them at full parallelism has been OOM-killing the
-      # self-hosted GPU runner (exit code 137). Cap parallel rustc jobs to reduce peak memory.
-      CARGO_BUILD_JOBS: 2
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -43,7 +39,11 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
       - name: Test (cuda)
-        run: cargo test --features cuda
+        # Scoped to the GPU-relevant crates: `cargo test --features cuda` with no `-p` builds the
+        # whole virtual workspace (wasm examples, pyo3, yew, tensor-tools, ...), which has been
+        # OOM-killing the self-hosted GPU runner (exit code 137) even with reduced build
+        # parallelism, since the problem is the sheer number of unrelated crates, not contention.
+        run: cargo test --features cuda -p candle-core -p candle-nn -p candle-transformers -p candle-examples
       - name: Test (cuda) - candle-onnx
         run: cargo test --manifest-path candle-onnx/Cargo.toml --features cuda -- --include-ignored
       - name: Build+test (cuda) - fused GPTQ/AWQ/FP8 kernels
