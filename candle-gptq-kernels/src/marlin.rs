@@ -429,10 +429,6 @@ mod tests {
     // for both the grouped and per-channel layouts.
     fn unpack_weights(b: &[i32], k: usize, n: usize) -> Vec<i32> {
         let (perm, _, _) = marlin_perms();
-        let mut inv = vec![0usize; PERM_LEN];
-        for (i, &p) in perm.iter().enumerate() {
-            inv[p] = i;
-        }
         let row_len = n * TILE;
         let packed_cols = n * 2;
         // invert bit packing
@@ -445,12 +441,14 @@ mod tests {
                 }
             }
         }
-        // invert perm
+        // invert perm: the forward direction computed `res[i] = tmp[perm[i]]`, so recovering
+        // `tmp` from `res` means scattering by `perm[i]` (not by the inverse permutation, which
+        // would only be correct if `perm` were self-inverse).
         let mut tmp = vec![0i32; res.len()];
         for (bk, block) in res.chunks_exact(PERM_LEN).enumerate() {
             let base = bk * PERM_LEN;
             for i in 0..PERM_LEN {
-                tmp[base + inv[i]] = block[i];
+                tmp[base + perm[i]] = block[i];
             }
         }
         // invert tile transpose
