@@ -33,7 +33,12 @@ fn main() -> anyhow::Result<()> {
         .arg("-std=c++17")
         .arg("-O3")
         .arg("-Xcompiler")
-        .arg("-fPIC");
+        .arg("-fPIC")
+        // The vendored Marlin kernel (kernels/marlin/marlin_cuda_kernel.cu) calls the constexpr
+        // __host__ helper `ceildiv` from __global__/__device__ code; recent nvcc rejects this
+        // without relaxing the constexpr rules. Passed as a build flag rather than editing the
+        // vendored kernel, which must stay an unmodified copy of upstream IST-DASLab/marlin.
+        .arg("--expt-relaxed-constexpr");
 
     let out_file = out_dir.join("libgptqkernels.a");
     builder.build_lib(out_file)?;
