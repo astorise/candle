@@ -291,6 +291,107 @@ pub mod cuda {
     }
 }
 
+/// Fused dequantize+GEMM Metal path: keeps the GPTQ checkpoint packed and runs the Metal kernel
+/// from `candle-gptq-kernels` on every forward pass. Apple Silicon has no tensor-core / Marlin
+/// equivalent here, so this always uses the scalar tiled kernel (any `bits` dividing 32).
+#[cfg(feature = "gptq-metal")]
+pub mod metal {
+    use super::GptqConfig;
+    use candle::{DType, Module, Result, Tensor};
+    use candle_nn::VarBuilder;
+
+    #[derive(Debug, Clone)]
+    pub struct GptqLinearMetal {
+        qweight: Tensor,
+        qzeros: Tensor,
+        scales: Tensor,
+        g_idx: Tensor,
+        bias: Option<Tensor>,
+        bits: usize,
+        group_size: usize,
+    }
+
+    impl GptqLinearMetal {
+        pub fn new(
+            in_dim: usize,
+            out_dim: usize,
+            cfg: GptqConfig,
+            bias: bool,
+            vb: VarBuilder,
+        ) -> Result<Self> {
+            let pack_factor = 32 / cfg.bits;
+            let n_groups = in_dim.div_ceil(cfg.group_size);
+            let qweight = vb.get_with_hints_dtype(
+                (in_dim / pack_factor, out_dim),
+                "qweight",
+                Default::default(),
+                DType::I32,
+            )?;
+            let qzeros = vb.get_with_hints_dtype(
+                (n_groups, out_dim / pack_factor),
+                "qzeros",
+                Default::default(),
+                DType::I32,
+            )?;
+            let scales = vb.get_with_hints_dtype(
+                (n_groups, out_dim),
+                "scales",
+                Default::default(),
+                DType::F32,
+            )?;
+            let g_idx = if vb.contains_tensor("g_idx") {
+                vb.get_with_hints_dtype(in_dim, "g_idx", Default::default(), DType::I32)?
+            } else {
+                let g_idx: Vec<i32> = (0..in_dim as i32)
+                    .map(|i| i / cfg.group_size as i32)
+                    .collect();
+                Tensor::from_vec(g_idx, in_dim, vb.device())?
+            };
+            let bias = if bias {
+                Some(vb.get(out_dim, "bias")?)
+            } else {
+                None
+            };
+
+            Ok(Self {
+                qweight,
+                qzeros,
+                scales,
+                g_idx,
+                bias,
+                bits: cfg.bits,
+                group_size: cfg.group_size,
+            })
+        }
+    }
+
+    impl Module for GptqLinearMetal {
+        fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+            let in_dims = xs.dims();
+            let in_dim = *in_dims.last().unwrap();
+            let m: usize = in_dims[..in_dims.len() - 1].iter().product();
+            let xs2 = xs.reshape((m, in_dim))?.to_dtype(DType::F32)?.contiguous()?;
+            let ys = candle_gptq_kernels::gptq_gemm(
+                &xs2,
+                &self.qweight,
+                &self.qzeros,
+                &self.scales,
+                &self.g_idx,
+                self.bits,
+                self.group_size,
+            )?;
+            let out_dim = ys.dim(1)?;
+            let mut out_dims = in_dims[..in_dims.len() - 1].to_vec();
+            out_dims.push(out_dim);
+            let ys = ys.reshape(out_dims)?;
+            match &self.bias {
+                None => Ok(ys),
+                Some(bias) => ys.broadcast_add(bias),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

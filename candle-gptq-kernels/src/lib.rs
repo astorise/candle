@@ -11,15 +11,29 @@
 //! For the common 4-bit symmetric case there is also [`marlin_gemm`], an FFI binding to the real
 //! Marlin tensor-core kernel (vendored CUDA C++ under `kernels/marlin/`); use
 //! [`marlin_repack_gptq`] once at load time to convert a checkpoint into Marlin's layout.
+//!
+//! With the `metal` feature the same [`gptq_gemm`] entry point runs a Metal port of the scalar
+//! tiled kernel on Apple Silicon (see `src/metal.rs` / `kernels/gptq_gemm.metal`); the tensor-core
+//! and Marlin paths remain CUDA-only.
 
+#[cfg(feature = "cuda")]
 mod ffi;
+#[cfg(feature = "cuda")]
 mod marlin;
 
+#[cfg(feature = "metal")]
+mod metal;
+
+#[cfg(feature = "cuda")]
 pub use marlin::{marlin_gemm, marlin_repack_gptq};
 
-use candle::backend::BackendStorage;
-use candle::cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut};
-use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Tensor};
+use candle::{CpuStorage, Layout, Result, Shape, Tensor};
+#[cfg(feature = "cuda")]
+use candle::{
+    backend::BackendStorage,
+    cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut},
+    CudaStorage, DType,
+};
 
 /// `x.apply_op3(qweight, qzeros, op)`: `scales` and `g_idx` ride along as extra fields, mirroring
 /// the pattern `candle-flash-attn` uses for `alibi_slopes` (CustomOp only supports 3 tensors).
@@ -30,6 +44,7 @@ pub struct GptqGemm {
     pub pack_factor: usize,
 }
 
+#[cfg(feature = "cuda")]
 impl GptqGemm {
     fn extra_cuda_slice<'a, T: candle::cuda_backend::CudaDType>(
         storage: &'a candle::Storage,
@@ -64,6 +79,22 @@ impl candle::CustomOp3 for GptqGemm {
         candle::bail!("no cpu support for the fused gptq-gemm kernel, use candle_transformers::quantized_gptq instead")
     }
 
+    #[cfg(feature = "metal")]
+    fn metal_fwd(
+        &self,
+        x: &candle::MetalStorage,
+        x_l: &Layout,
+        qweight: &candle::MetalStorage,
+        qweight_l: &Layout,
+        qzeros: &candle::MetalStorage,
+        qzeros_l: &Layout,
+    ) -> Result<(candle::MetalStorage, Shape)> {
+        metal::gptq_gemm_metal_fwd(
+            self, x, x_l, qweight, qweight_l, qzeros, qzeros_l,
+        )
+    }
+
+    #[cfg(feature = "cuda")]
     fn cuda_fwd(
         &self,
         x: &CudaStorage,
@@ -176,15 +207,19 @@ pub fn gptq_gemm(
 }
 
 /// `x.apply_op3(qweight, qzeros, op)`: `scales` and `g_idx` ride along as extra fields, same
-/// pattern as [`GptqGemm`].
+/// pattern as [`GptqGemm`]. CUDA-only (tensor cores / WMMA have no Metal equivalent here).
+#[cfg(feature = "cuda")]
 pub struct GptqGemmTensorCore {
     pub scales: Tensor,
     pub g_idx: Tensor,
 }
 
+#[cfg(feature = "cuda")]
 const GPTQ_TC_BITS: usize = 4;
+#[cfg(feature = "cuda")]
 const GPTQ_TC_PACK_FACTOR: usize = 32 / GPTQ_TC_BITS;
 
+#[cfg(feature = "cuda")]
 impl candle::CustomOp3 for GptqGemmTensorCore {
     fn name(&self) -> &'static str {
         "gptq-gemm-tensor-core"
@@ -288,6 +323,7 @@ impl candle::CustomOp3 for GptqGemmTensorCore {
 /// Same checkpoint layout as [`gptq_gemm`], but the GEMM itself runs on tensor cores instead
 /// of scalar FMAs (see `kernels/gptq_gemm_tc.cu`). Only `bits == 4` is supported; use
 /// [`gptq_gemm`] for other bit widths.
+#[cfg(feature = "cuda")]
 pub fn gptq_gemm_tensor_core(
     x: &Tensor,
     qweight: &Tensor,
@@ -308,7 +344,7 @@ pub fn gptq_gemm_tensor_core(
     x.apply_op3(qweight, qzeros, op)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cuda"))]
 mod tests {
     use super::*;
     use candle::Device;
@@ -426,6 +462,116 @@ mod tests {
                     (y_scalar[row][col] - exp).abs() < 1e-3 + 1e-5 * exp.abs(),
                     "scalar mismatch at ({row},{col}): {} vs {exp}",
                     y_scalar[row][col]
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "metal"))]
+mod metal_tests {
+    use super::*;
+    use candle::Device;
+
+    /// Plain-Rust reference (f64 accumulation), independent of the Metal kernel.
+    #[allow(clippy::too_many_arguments)]
+    fn dequant_matmul_ref(
+        x: &[f32],
+        qweight: &[i32],
+        qzeros: &[i32],
+        scales: &[f32],
+        g_idx: &[i32],
+        m: usize,
+        k: usize,
+        n: usize,
+        pack_factor: usize,
+        bits: usize,
+    ) -> Vec<f32> {
+        let mask = (1i32 << bits) - 1;
+        let n_packed = n / pack_factor;
+        let mut y = vec![0f32; m * n];
+        for row in 0..m {
+            for col in 0..n {
+                let mut acc = 0f64;
+                for kk in 0..k {
+                    let g = g_idx[kk] as usize;
+                    let w_word = qweight[(kk / pack_factor) * n + col];
+                    let shift_q = (kk % pack_factor) * bits;
+                    let q = (w_word >> shift_q) & mask;
+                    let z_word = qzeros[g * n_packed + col / pack_factor];
+                    let shift_z = (col % pack_factor) * bits;
+                    let z = ((z_word >> shift_z) & mask) + 1;
+                    let s = scales[g * n + col];
+                    let w = (q - z) as f32 * s;
+                    acc += x[row * k + kk] as f64 * w as f64;
+                }
+                y[row * n + col] = acc as f32;
+            }
+        }
+        y
+    }
+
+    /// Numeric correctness test for the Metal scalar kernel. Dimensions are deliberately not
+    /// multiples of the 16x16 tile to exercise the zero-padding paths. Requires a Metal device;
+    /// run on the macOS GPU CI runner (see `.github/workflows/ci_metal.yaml`).
+    #[test]
+    fn gptq_gemm_metal_matches_reference() -> Result<()> {
+        let device = Device::new_metal(0)?;
+        let bits = 4;
+        let pack_factor = 32 / bits;
+        let m = 17; // not a multiple of TILE=16
+        let k = 48; // multiple of pack_factor=8, not a multiple of TILE=16
+        let n = 24; // not a multiple of TILE=16
+        let group_size = 16;
+        let n_groups = k.div_ceil(group_size);
+
+        let x: Vec<f32> = (0..m * k).map(|i| ((i % 13) as f32 - 6.0) * 0.1).collect();
+        let qweight: Vec<i32> = (0..(k / pack_factor) * n)
+            .map(|i| {
+                let mut packed = 0i32;
+                for sub in 0..pack_factor {
+                    let v = ((i * 7 + sub * 3) % 16) as i32;
+                    packed |= v << (sub * bits);
+                }
+                packed
+            })
+            .collect();
+        let qzeros: Vec<i32> = (0..n_groups * (n / pack_factor))
+            .map(|i| {
+                let mut packed = 0i32;
+                for sub in 0..pack_factor {
+                    let v = ((i * 5 + sub) % 16) as i32;
+                    packed |= v << (sub * bits);
+                }
+                packed
+            })
+            .collect();
+        let scales: Vec<f32> = (0..n_groups * n)
+            .map(|i| 0.05 + (i % 7) as f32 * 0.01)
+            .collect();
+        let g_idx: Vec<i32> = (0..k as i32).map(|i| i / group_size as i32).collect();
+
+        let expected = dequant_matmul_ref(
+            &x, &qweight, &qzeros, &scales, &g_idx, m, k, n, pack_factor, bits,
+        );
+
+        let x_t = Tensor::from_vec(x, (m, k), &device)?;
+        let qweight_t = Tensor::from_vec(qweight, (k / pack_factor, n), &device)?;
+        let qzeros_t = Tensor::from_vec(qzeros, (n_groups, n / pack_factor), &device)?;
+        let scales_t = Tensor::from_vec(scales, (n_groups, n), &device)?;
+        let g_idx_t = Tensor::from_vec(g_idx, k, &device)?;
+
+        let y = gptq_gemm(&x_t, &qweight_t, &qzeros_t, &scales_t, &g_idx_t, bits, group_size)?
+            .to_vec2::<f32>()?;
+
+        for row in 0..m {
+            for col in 0..n {
+                let exp = expected[row * n + col];
+                assert!(
+                    (y[row][col] - exp).abs() < 1e-3 + 1e-5 * exp.abs(),
+                    "metal mismatch at ({row},{col}): {} vs {exp}",
+                    y[row][col]
                 );
             }
         }

@@ -44,7 +44,7 @@ candle-datasets = { path = "./candle-datasets", version = "0.10.2" }
 candle-flash-attn = { path = "./candle-flash-attn", version = "0.10.2" }
 candle-flash-attn-v3 = { path = "./candle-flash-attn-v3", version = "0.10.2" }
 candle-fp8-kernels = { path = "./candle-fp8-kernels", version = "0.10.2" }
-candle-gptq-kernels = { path = "./candle-gptq-kernels", version = "0.10.2" }
+candle-gptq-kernels = { path = "./candle-gptq-kernels", version = "0.10.2", default-features = false }
 candle-kernels = { path = "./candle-kernels", version = "0.10.2" }
 candle-metal-kernels = { path = "./candle-metal-kernels", version = "0.10.2" }
 candle-nn = { path = "./candle-nn", version = "0.10.2" }

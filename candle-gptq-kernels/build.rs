@@ -1,9 +1,20 @@
 // Build script compiling the GPTQ fused dequant+GEMM CUDA kernel into a static lib.
-use cudaforge::KernelBuilder;
+//
+// The CUDA compile only runs when the `cuda` feature is enabled (i.e. `CARGO_FEATURE_CUDA` is
+// set). With `--features metal` and no CUDA the crate has no native build step: the Metal kernel
+// source is compiled at runtime from the embedded `.metal` string, so this script is a no-op.
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
     println!("cargo::rerun-if-changed=build.rs");
+
+    if std::env::var("CARGO_FEATURE_CUDA").is_err() {
+        // No CUDA requested (e.g. a Metal-only build): nothing to compile or link.
+        return Ok(());
+    }
+
+    use cudaforge::KernelBuilder;
+
     println!("cargo::rerun-if-changed=kernels/gptq_gemm.cu");
     println!("cargo::rerun-if-changed=kernels/gptq_gemm_tc.cu");
     println!("cargo::rerun-if-changed=kernels/marlin/marlin_cuda_kernel.cu");
