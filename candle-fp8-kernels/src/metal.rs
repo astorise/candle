@@ -70,13 +70,22 @@ pub(crate) fn fp8_block_gemm_metal_fwd(
     scale_l: &Layout,
 ) -> Result<(MetalStorage, Shape)> {
     if x.dtype() != DType::F32 {
-        candle::bail!("fp8-block-gemm (metal) only supports f32 activations, got {:?}", x.dtype());
+        candle::bail!(
+            "fp8-block-gemm (metal) only supports f32 activations, got {:?}",
+            x.dtype()
+        );
     }
     if w.dtype() != DType::F8E4M3 {
-        candle::bail!("fp8-block-gemm (metal) expects an F8E4M3 weight, got {:?}", w.dtype());
+        candle::bail!(
+            "fp8-block-gemm (metal) expects an F8E4M3 weight, got {:?}",
+            w.dtype()
+        );
     }
     if scale.dtype() != DType::F32 {
-        candle::bail!("fp8-block-gemm (metal) expects an f32 scale, got {:?}", scale.dtype());
+        candle::bail!(
+            "fp8-block-gemm (metal) expects an f32 scale, got {:?}",
+            scale.dtype()
+        );
     }
 
     let (m, k) = x_l.shape().dims2()?;
@@ -113,7 +122,11 @@ pub(crate) fn fp8_block_gemm_metal_fwd(
 
     encoder.set_input_buffer(0, Some(x.buffer()), offset_bytes(x_l, x.dtype()));
     encoder.set_input_buffer(1, Some(w.buffer()), offset_bytes(w_l, w.dtype()));
-    encoder.set_input_buffer(2, Some(scale.buffer()), offset_bytes(scale_l, scale.dtype()));
+    encoder.set_input_buffer(
+        2,
+        Some(scale.buffer()),
+        offset_bytes(scale_l, scale.dtype()),
+    );
     encoder.set_output_buffer(3, Some(output.as_ref()), 0);
     encoder.set_bytes(4, &params);
 

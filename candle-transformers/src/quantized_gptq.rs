@@ -251,7 +251,10 @@ pub mod cuda {
             // one for the 4-bit case, the scalar one for other bit widths. Either way the result
             // is normalized to f32, matching the existing forward contract.
             let ys = if let Some((b, s)) = &self.marlin {
-                let xs2 = xs.reshape((m, in_dim))?.to_dtype(DType::F16)?.contiguous()?;
+                let xs2 = xs
+                    .reshape((m, in_dim))?
+                    .to_dtype(DType::F16)?
+                    .contiguous()?;
                 candle_gptq_kernels::marlin_gemm(&xs2, b, s)?.to_dtype(DType::F32)?
             } else {
                 let xs2 = xs
@@ -370,7 +373,10 @@ pub mod metal {
             let in_dims = xs.dims();
             let in_dim = *in_dims.last().unwrap();
             let m: usize = in_dims[..in_dims.len() - 1].iter().product();
-            let xs2 = xs.reshape((m, in_dim))?.to_dtype(DType::F32)?.contiguous()?;
+            let xs2 = xs
+                .reshape((m, in_dim))?
+                .to_dtype(DType::F32)?
+                .contiguous()?;
             let ys = candle_gptq_kernels::gptq_gemm(
                 &xs2,
                 &self.qweight,

@@ -13,13 +13,13 @@ mod ffi;
 #[cfg(feature = "metal")]
 mod metal;
 
-use candle::{CpuStorage, Layout, Result, Shape, Tensor};
 #[cfg(feature = "cuda")]
 use candle::{
     backend::BackendStorage,
     cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut},
     CudaStorage, DType,
 };
+use candle::{CpuStorage, Layout, Result, Shape, Tensor};
 
 pub struct Fp8BlockGemm {
     pub block_size: usize,

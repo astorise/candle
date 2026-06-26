@@ -71,7 +71,10 @@ pub(crate) fn awq_gemm_metal_fwd(
     qzeros_l: &Layout,
 ) -> Result<(MetalStorage, Shape)> {
     if x.dtype() != DType::F32 {
-        candle::bail!("awq-gemm (metal) only supports f32 activations, got {:?}", x.dtype());
+        candle::bail!(
+            "awq-gemm (metal) only supports f32 activations, got {:?}",
+            x.dtype()
+        );
     }
     if qweight.dtype() != DType::I32 || qzeros.dtype() != DType::I32 {
         candle::bail!(
@@ -91,7 +94,10 @@ pub(crate) fn awq_gemm_metal_fwd(
         candle::bail!("awq-gemm (metal): qzeros cols {qz_packed} != qweight cols {n_packed}");
     }
     if op.scales.dtype() != DType::F32 {
-        candle::bail!("awq-gemm (metal): scales must be f32, got {:?}", op.scales.dtype());
+        candle::bail!(
+            "awq-gemm (metal): scales must be f32, got {:?}",
+            op.scales.dtype()
+        );
     }
 
     let device = x.device().clone();
@@ -119,9 +125,21 @@ pub(crate) fn awq_gemm_metal_fwd(
     encoder.set_compute_pipeline_state(&pipeline);
 
     encoder.set_input_buffer(0, Some(x.buffer()), offset_bytes(x_l, x.dtype()));
-    encoder.set_input_buffer(1, Some(qweight.buffer()), offset_bytes(qweight_l, qweight.dtype()));
-    encoder.set_input_buffer(2, Some(qzeros.buffer()), offset_bytes(qzeros_l, qzeros.dtype()));
-    encoder.set_input_buffer(3, Some(scales_metal.buffer()), offset_bytes(scales_l, scales_metal.dtype()));
+    encoder.set_input_buffer(
+        1,
+        Some(qweight.buffer()),
+        offset_bytes(qweight_l, qweight.dtype()),
+    );
+    encoder.set_input_buffer(
+        2,
+        Some(qzeros.buffer()),
+        offset_bytes(qzeros_l, qzeros.dtype()),
+    );
+    encoder.set_input_buffer(
+        3,
+        Some(scales_metal.buffer()),
+        offset_bytes(scales_l, scales_metal.dtype()),
+    );
     encoder.set_output_buffer(4, Some(output.as_ref()), 0);
     encoder.set_bytes(5, &params);
 

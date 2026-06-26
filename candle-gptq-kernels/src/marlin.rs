@@ -223,8 +223,10 @@ pub fn marlin_repack_gptq(
     let s_flat = pack_scales(&scales_flat, n_groups, n, grouped);
     let s_flat_f16: Vec<f16> = s_flat.into_iter().map(f16::from_f32).collect();
 
-    let b = Tensor::from_vec(b_flat, (k / TILE, n * 2), &candle::Device::Cpu)?.to_device(&device)?;
-    let s = Tensor::from_vec(s_flat_f16, (n_groups, n), &candle::Device::Cpu)?.to_device(&device)?;
+    let b =
+        Tensor::from_vec(b_flat, (k / TILE, n * 2), &candle::Device::Cpu)?.to_device(&device)?;
+    let s =
+        Tensor::from_vec(s_flat_f16, (n_groups, n), &candle::Device::Cpu)?.to_device(&device)?;
     Ok(Some((b, s)))
 }
 
@@ -380,14 +382,17 @@ mod tests {
         assert_eq!(scale_perm_single.len(), SCALE_PERM_SINGLE_LEN);
         let mut sorted = perm.clone();
         sorted.sort_unstable();
-        assert!(sorted.iter().copied().eq(0..PERM_LEN), "perm not a bijection");
+        assert!(
+            sorted.iter().copied().eq(0..PERM_LEN),
+            "perm not a bijection"
+        );
         assert_eq!(perm.iter().sum::<usize>(), 523776);
         assert_eq!(&perm[..8], &[0, 128, 8, 136, 16, 144, 24, 152]);
         assert_eq!(
             scale_perm_single,
             vec![
-                0, 1, 8, 9, 16, 17, 24, 25, 2, 3, 10, 11, 18, 19, 26, 27, 4, 5, 12, 13, 20, 21,
-                28, 29, 6, 7, 14, 15, 22, 23, 30, 31
+                0, 1, 8, 9, 16, 17, 24, 25, 2, 3, 10, 11, 18, 19, 26, 27, 4, 5, 12, 13, 20, 21, 28,
+                29, 6, 7, 14, 15, 22, 23, 30, 31
             ]
         );
     }
@@ -541,7 +546,9 @@ mod tests {
             .expect("checkpoint should be Marlin-eligible");
 
         let a_t = Tensor::from_vec(a, (m, k), &device)?.to_dtype(DType::F16)?;
-        let y = marlin_gemm(&a_t, &b, &s)?.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+        let y = marlin_gemm(&a_t, &b, &s)?
+            .to_dtype(DType::F32)?
+            .to_vec2::<f32>()?;
 
         for row in 0..m {
             for col in 0..n {

@@ -14,13 +14,13 @@ mod ffi;
 #[cfg(feature = "metal")]
 mod metal;
 
-use candle::{CpuStorage, Layout, Result, Shape, Tensor};
 #[cfg(feature = "cuda")]
 use candle::{
     backend::BackendStorage,
     cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut},
     CudaStorage, DType,
 };
+use candle::{CpuStorage, Layout, Result, Shape, Tensor};
 
 /// `x.apply_op3(qweight, qzeros, op)`: `scales` rides along as an extra field, mirroring the
 /// pattern `candle-flash-attn` uses for `alibi_slopes` (CustomOp only supports 3 tensors).

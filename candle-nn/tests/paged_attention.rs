@@ -233,8 +233,8 @@ fn alibi_bias_is_applied() -> Result<()> {
 
     let num_blocks = ctx.div_ceil(block_size) + 1;
     let (k_cache, v_cache, block_tables, context_lens) = build_paged_cache(
-        &[k.clone()],
-        &[v.clone()],
+        std::slice::from_ref(&k),
+        std::slice::from_ref(&v),
         num_blocks,
         block_size,
         num_heads,
@@ -259,9 +259,9 @@ fn alibi_bias_is_applied() -> Result<()> {
     let mut scores = (qh.matmul(&kh.transpose(1, 2)?.contiguous()?)? * scale as f64)?; // [H,1,ctx]
     let slopes_v = slopes.to_vec1::<f32>()?;
     let mut bias: Vec<f32> = Vec::with_capacity(num_heads * ctx);
-    for h in 0..num_heads {
+    for &slope in slopes_v.iter() {
         for j in 0..ctx {
-            bias.push(-slopes_v[h] * (ctx - 1 - j) as f32);
+            bias.push(-slope * (ctx - 1 - j) as f32);
         }
     }
     let bias = Tensor::from_vec(bias, (num_heads, 1, ctx), &device)?;

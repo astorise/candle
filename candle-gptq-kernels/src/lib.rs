@@ -27,13 +27,13 @@ mod metal;
 #[cfg(feature = "cuda")]
 pub use marlin::{marlin_gemm, marlin_repack_gptq};
 
-use candle::{CpuStorage, Layout, Result, Shape, Tensor};
 #[cfg(feature = "cuda")]
 use candle::{
     backend::BackendStorage,
     cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut},
     CudaStorage, DType,
 };
+use candle::{CpuStorage, Layout, Result, Shape, Tensor};
 
 /// `x.apply_op3(qweight, qzeros, op)`: `scales` and `g_idx` ride along as extra fields, mirroring
 /// the pattern `candle-flash-attn` uses for `alibi_slopes` (CustomOp only supports 3 tensors).
@@ -89,9 +89,7 @@ impl candle::CustomOp3 for GptqGemm {
         qzeros: &candle::MetalStorage,
         qzeros_l: &Layout,
     ) -> Result<(candle::MetalStorage, Shape)> {
-        metal::gptq_gemm_metal_fwd(
-            self, x, x_l, qweight, qweight_l, qzeros, qzeros_l,
-        )
+        metal::gptq_gemm_metal_fwd(self, x, x_l, qweight, qweight_l, qzeros, qzeros_l)
     }
 
     #[cfg(feature = "cuda")]
@@ -285,7 +283,8 @@ impl candle::CustomOp3 for GptqGemmTensorCore {
             None => candle::bail!("gptq-gemm-tensor-core: qzeros must be contiguous"),
         };
         let (scales_storage, scales_layout) = self.scales.storage_and_layout();
-        let scales_slice = GptqGemm::extra_cuda_slice::<f32>(&scales_storage, scales_layout, "scales")?;
+        let scales_slice =
+            GptqGemm::extra_cuda_slice::<f32>(&scales_storage, scales_layout, "scales")?;
         let (g_idx_storage, g_idx_layout) = self.g_idx.storage_and_layout();
         let g_idx_slice = GptqGemm::extra_cuda_slice::<i32>(&g_idx_storage, g_idx_layout, "g_idx")?;
 
@@ -431,7 +430,16 @@ mod tests {
         let g_idx: Vec<i32> = (0..k as i32).map(|i| i / group_size as i32).collect();
 
         let expected = dequant_matmul_ref(
-            &x, &qweight, &qzeros, &scales, &g_idx, m, k, n, pack_factor, bits,
+            &x,
+            &qweight,
+            &qzeros,
+            &scales,
+            &g_idx,
+            m,
+            k,
+            n,
+            pack_factor,
+            bits,
         );
 
         let x_t = Tensor::from_vec(x, (m, k), &device)?;
@@ -442,9 +450,10 @@ mod tests {
 
         let y_tc = gptq_gemm_tensor_core(&x_t, &qweight_t, &qzeros_t, &scales_t, &g_idx_t, bits)?
             .to_vec2::<f32>()?;
-        let y_scalar =
-            gptq_gemm(&x_t, &qweight_t, &qzeros_t, &scales_t, &g_idx_t, bits, group_size)?
-                .to_vec2::<f32>()?;
+        let y_scalar = gptq_gemm(
+            &x_t, &qweight_t, &qzeros_t, &scales_t, &g_idx_t, bits, group_size,
+        )?
+        .to_vec2::<f32>()?;
 
         for row in 0..m {
             for col in 0..n {
@@ -553,7 +562,16 @@ mod metal_tests {
         let g_idx: Vec<i32> = (0..k as i32).map(|i| i / group_size as i32).collect();
 
         let expected = dequant_matmul_ref(
-            &x, &qweight, &qzeros, &scales, &g_idx, m, k, n, pack_factor, bits,
+            &x,
+            &qweight,
+            &qzeros,
+            &scales,
+            &g_idx,
+            m,
+            k,
+            n,
+            pack_factor,
+            bits,
         );
 
         let x_t = Tensor::from_vec(x, (m, k), &device)?;
@@ -562,8 +580,10 @@ mod metal_tests {
         let scales_t = Tensor::from_vec(scales, (n_groups, n), &device)?;
         let g_idx_t = Tensor::from_vec(g_idx, k, &device)?;
 
-        let y = gptq_gemm(&x_t, &qweight_t, &qzeros_t, &scales_t, &g_idx_t, bits, group_size)?
-            .to_vec2::<f32>()?;
+        let y = gptq_gemm(
+            &x_t, &qweight_t, &qzeros_t, &scales_t, &g_idx_t, bits, group_size,
+        )?
+        .to_vec2::<f32>()?;
 
         for row in 0..m {
             for col in 0..n {
