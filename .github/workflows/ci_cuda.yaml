@@ -58,3 +58,12 @@ jobs:
           else
             echo "deepseekv3_integration.rs not present on this ref, skipping"
           fi
+      - name: Test (cuda) - Llama 4 end-to-end (tiny-random checkpoint)
+        # Not every ref dispatched against this workflow (via `test_ref`) defines this test,
+        # so don't fail the whole job if it's absent on the checked-out ref.
+        run: |
+          if [ -f candle-examples/tests/llama4_integration.rs ]; then
+            cargo test -p candle-examples --release --features cuda --test llama4_integration -- --ignored
+          else
+            echo "llama4_integration.rs not present on this ref, skipping"
+          fi
