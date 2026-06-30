@@ -13,6 +13,9 @@ pub enum Sampling {
     TopK { k: usize, temperature: f64 },
     TopP { p: f64, temperature: f64 },
     TopKThenTopP { k: usize, p: f64, temperature: f64 },
+    // Keeps only tokens whose probability is at least `p * max_prob`, where
+    // `max_prob` is the probability of the most likely token.
+    MinP { p: f64, temperature: f64 },
     // Note that the rng is not used for the Gumbel-Softmax sampling.
     GumbelSoftmax { temperature: f64 },
 }
@@ -49,7 +52,7 @@ impl LogitsProcessor {
         sampled.to_scalar::<u32>()
     }
 
-    fn sample_multinomial(&mut self, prs: &Vec<f32>) -> Result<u32> {
+    fn sample_multinomial(&mut self, prs: &[f32]) -> Result<u32> {
         let distr = rand::distr::weighted::WeightedIndex::new(prs).map_err(Error::wrap)?;
         let next_token = distr.sample(&mut self.rng) as u32;
         Ok(next_token)
@@ -89,6 +92,20 @@ impl LogitsProcessor {
             let index = self.sample_multinomial(&prs)?;
             Ok(indices[index as usize] as u32)
         }
+    }
+
+    // min-p sampling keeps only the tokens whose probability is at least
+    // `p * max_prob`, where `max_prob` is the probability of the most likely
+    // token, then samples from the remaining distribution.
+    fn sample_minp(&mut self, prs: &mut [f32], min_p: f32) -> Result<u32> {
+        let max_p = prs.iter().cloned().fold(f32::MIN, f32::max);
+        let threshold = max_p * min_p;
+        for p in prs.iter_mut() {
+            if *p < threshold {
+                *p = 0.0;
+            }
+        }
+        self.sample_multinomial(prs)
     }
 
     // top-k sampling samples from the k tokens with the largest probabilities.
@@ -144,6 +161,15 @@ impl LogitsProcessor {
                     self.sample_topp(&mut prs, *p as f32)?
                 }
             }
+            Sampling::MinP { p, temperature } => {
+                let mut prs = prs(*temperature)?;
+                if *p <= 0.0 || *p >= 1.0 {
+                    // simply sample from the predicted probability distribution
+                    self.sample_multinomial(&prs)?
+                } else {
+                    self.sample_minp(&mut prs, *p as f32)?
+                }
+            }
             Sampling::TopK { k, temperature } => {
                 let mut prs = prs(*temperature)?;
                 self.sample_topk(&mut prs, *k)?
@@ -154,5 +180,29 @@ impl LogitsProcessor {
             }
         };
         Ok(next_token)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn min_p_keeps_only_high_probability_tokens() -> Result<()> {
+        let mut logits_processor = LogitsProcessor::from_sampling(
+            1337,
+            Sampling::MinP {
+                p: 0.5,
+                temperature: 1.0,
+            },
+        );
+        // Token 2 has by far the largest logit, so with p=0.5 only tokens whose
+        // probability is at least half of the max should ever be sampled.
+        let logits = Tensor::new(&[1f32, 1f32, 10f32, 1f32], &candle::Device::Cpu)?;
+        for _ in 0..20 {
+            let token = logits_processor.sample(&logits)?;
+            assert_eq!(token, 2);
+        }
+        Ok(())
     }
 }
