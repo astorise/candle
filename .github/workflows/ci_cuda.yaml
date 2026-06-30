@@ -49,3 +49,12 @@ jobs:
         # Not every ref dispatched against this workflow (via `test_ref`) defines a `cuda`
         # feature on candle-onnx, so don't request one here.
         run: cargo test --manifest-path candle-onnx/Cargo.toml -- --include-ignored
+      - name: Test (cuda) - DeepSeek-V3 end-to-end (tiny-random checkpoint)
+        # Not every ref dispatched against this workflow (via `test_ref`) defines this test,
+        # so don't fail the whole job if it's absent on the checked-out ref.
+        run: |
+          if [ -f candle-examples/tests/deepseekv3_integration.rs ]; then
+            cargo test -p candle-examples --release --features cuda --test deepseekv3_integration -- --ignored
+          else
+            echo "deepseekv3_integration.rs not present on this ref, skipping"
+          fi
