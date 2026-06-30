@@ -46,4 +46,6 @@ jobs:
       - name: Test (cuda)
         run: cargo test --features cuda
       - name: Test (cuda) - candle-onnx
-        run: cargo test --manifest-path candle-onnx/Cargo.toml --features cuda -- --include-ignored
+        # Not every ref dispatched against this workflow (via `test_ref`) defines a `cuda`
+        # feature on candle-onnx, so don't request one here.
+        run: cargo test --manifest-path candle-onnx/Cargo.toml -- --include-ignored
