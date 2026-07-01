@@ -29,6 +29,12 @@ impl LoraConfig {
 
 type LoraSpec<'a> = (String, VarBuilder<'a>, LoraConfig);
 
+/// Prefix under which a standard PEFT `PeftModel` checkpoint stores its base
+/// model's weights, e.g. `base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight`.
+/// This is the default root [`LlamaLoadConfig::with_lora_adapter`] resolves
+/// LoRA tensor paths against.
+pub const PEFT_ADAPTER_PREFIX: &str = "base_model.model";
+
 /// Configuration used by [`Llama::load_with_config`] to inject one or more
 /// named LoRA adapters into the base model's attention and MLP projections.
 /// Building a model with an empty (default) config is equivalent to
@@ -40,11 +46,29 @@ pub struct LlamaLoadConfig<'a> {
 
 impl<'a> LlamaLoadConfig<'a> {
     /// Registers a named LoRA adapter, loaded from `vb`, to be injected into
-    /// the projections listed in `config.target_modules`. `vb` is expected to
-    /// mirror the base model's module layout (e.g. `model.layers.{i}.self_attn.q_proj`)
-    /// with each targeted projection holding `lora_A.weight` and `lora_B.weight`
-    /// tensors.
-    pub fn with_lora_adapter(mut self, name: &str, vb: VarBuilder<'a>, config: LoraConfig) -> Self {
+    /// the projections listed in `config.target_modules`. `vb` is assumed to
+    /// be rooted at the standard PEFT checkpoint layout, i.e. tensors live
+    /// under [`PEFT_ADAPTER_PREFIX`] `.model.layers.{i}.self_attn.q_proj` (and
+    /// so on), each holding `lora_A.weight` / `lora_B.weight`. Use
+    /// [`LlamaLoadConfig::with_lora_adapter_prefixed`] if the checkpoint was
+    /// saved under a different root, or if `vb` is already scoped past that
+    /// prefix.
+    pub fn with_lora_adapter(self, name: &str, vb: VarBuilder<'a>, config: LoraConfig) -> Self {
+        self.with_lora_adapter_prefixed(name, vb, config, PEFT_ADAPTER_PREFIX)
+    }
+
+    /// Like [`LlamaLoadConfig::with_lora_adapter`], but resolves LoRA tensors
+    /// under `prefix` instead of the standard [`PEFT_ADAPTER_PREFIX`]. Pass an
+    /// empty string if `vb` is already scoped to the model root (i.e. tensors
+    /// live directly under `model.layers.{i}...`).
+    pub fn with_lora_adapter_prefixed(
+        mut self,
+        name: &str,
+        vb: VarBuilder<'a>,
+        config: LoraConfig,
+        prefix: &str,
+    ) -> Self {
+        let vb = if prefix.is_empty() { vb } else { vb.pp(prefix) };
         self.lora_adapters.push((name.to_string(), vb, config));
         self
     }
@@ -851,11 +875,20 @@ mod tests {
         ts
     }
 
-    fn lora_adapter_weights(cfg: &Config, rank: usize, dev: &Device) -> HashMap<String, Tensor> {
+    fn lora_adapter_weights(
+        cfg: &Config,
+        rank: usize,
+        dev: &Device,
+        prefix: &str,
+    ) -> HashMap<String, Tensor> {
         let h = cfg.hidden_size;
         let mut ts = HashMap::new();
         for i_layer in 0..cfg.num_hidden_layers {
-            let p = format!("model.layers.{i_layer}.self_attn.o_proj");
+            let p = if prefix.is_empty() {
+                format!("model.layers.{i_layer}.self_attn.o_proj")
+            } else {
+                format!("{prefix}.model.layers.{i_layer}.self_attn.o_proj")
+            };
             ts.insert(
                 format!("{p}.lora_A.weight"),
                 Tensor::ones((rank, h), DType::F32, dev).unwrap(),
@@ -889,8 +922,13 @@ mod tests {
         let dev = Device::Cpu;
         let cfg = tiny_config();
         let base_vb = VarBuilder::from_tensors(base_weights(&cfg, &dev), DType::F32, &dev);
-        let adapter_vb =
-            VarBuilder::from_tensors(lora_adapter_weights(&cfg, 2, &dev), DType::F32, &dev);
+        // Adapter weights follow the standard PEFT `base_model.model.` layout;
+        // `with_lora_adapter` should resolve them without any extra scoping.
+        let adapter_vb = VarBuilder::from_tensors(
+            lora_adapter_weights(&cfg, 2, &dev, PEFT_ADAPTER_PREFIX),
+            DType::F32,
+            &dev,
+        );
         let load_config = LlamaLoadConfig::default().with_lora_adapter(
             "adapter",
             adapter_vb,
@@ -918,6 +956,40 @@ mod tests {
         assert_eq!(base_logits, back_to_base_logits);
 
         assert!(model.set_active_adapter(Some("missing")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn lora_adapter_with_custom_prefix() -> Result<()> {
+        let dev = Device::Cpu;
+        let cfg = tiny_config();
+        let base_vb = VarBuilder::from_tensors(base_weights(&cfg, &dev), DType::F32, &dev);
+        // Adapter checkpoint saved without any wrapping prefix (tensors live
+        // directly under `model.layers.{i}...`), as if already unwrapped from
+        // a PeftModel. `with_lora_adapter` alone would look under
+        // `base_model.model.` and fail to find these tensors.
+        let adapter_vb =
+            VarBuilder::from_tensors(lora_adapter_weights(&cfg, 2, &dev, ""), DType::F32, &dev);
+        let load_config = LlamaLoadConfig::default().with_lora_adapter_prefixed(
+            "adapter",
+            adapter_vb,
+            LoraConfig {
+                rank: 2,
+                alpha: 4.0,
+                target_modules: vec!["o_proj".to_string()],
+            },
+            "",
+        );
+        let model = Llama::load_with_config(base_vb, &cfg, load_config)?;
+
+        let input = Tensor::new(&[[1u32, 2, 3]], &dev)?;
+        let mut cache = Cache::new(false, DType::F32, &cfg, &dev)?;
+        let base_logits = model.forward(&input, 0, &mut cache)?.to_vec2::<f32>()?;
+
+        model.set_active_adapter(Some("adapter"))?;
+        let mut cache = Cache::new(false, DType::F32, &cfg, &dev)?;
+        let adapter_logits = model.forward(&input, 0, &mut cache)?.to_vec2::<f32>()?;
+        assert_ne!(base_logits, adapter_logits);
         Ok(())
     }
 }
