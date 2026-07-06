@@ -39,7 +39,9 @@ jobs:
         with:
           ref: ${{ github.event.inputs.test_ref || github.ref }}
       - name: Install dependencies
-        run: apt update && apt install curl build-essential libssl-dev protobuf-compiler pkg-config -y
+        # `git` is required by candle-flash-attn's build.rs, which `git clone`s NVIDIA
+        # cutlass; the base cuda image doesn't ship it.
+        run: apt update && apt install curl build-essential libssl-dev protobuf-compiler pkg-config git -y
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
