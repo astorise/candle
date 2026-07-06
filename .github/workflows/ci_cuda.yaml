@@ -67,3 +67,14 @@ jobs:
           else
             echo "llama4_integration.rs not present on this ref, skipping"
           fi
+      - name: Test (cuda) - Llama paged KV cache seam (flash-attn)
+        # `--features cuda` above doesn't imply `flash-attn`, so the paged-attention
+        # code path in candle-transformers::models::llama never gets compiled by the
+        # main step. Not every ref dispatched against this workflow (via `test_ref`)
+        # defines that seam, so don't fail the whole job if it's absent.
+        run: |
+          if grep -q 'paged_attention_matches_dense_causal_attention_on_gpu' candle-transformers/src/models/llama.rs 2>/dev/null; then
+            cargo test -p candle-transformers --release --features flash-attn --lib models::llama::
+          else
+            echo "paged KV cache flash-attn seam not present on this ref, skipping"
+          fi
