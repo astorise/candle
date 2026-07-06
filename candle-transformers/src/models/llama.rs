@@ -142,11 +142,35 @@ impl Config {
     }
 }
 
+/// Physical KV storage and per-sequence block table for paged attention.
+///
+/// Constructed and owned by the caller (e.g. a downstream paged-attention scheduler); the model
+/// only reads/writes it during `forward` through the seam below. One instance is needed per
+/// transformer layer, since each layer's KV storage is independent.
+#[derive(Debug, Clone)]
+pub struct PagedKvCache {
+    /// `(num_blocks, page_block_size, num_kv_heads, head_dim)`, dtype matching the model.
+    pub key_cache: Tensor,
+    /// `(num_blocks, page_block_size, num_kv_heads, head_dim)`, dtype matching the model.
+    pub value_cache: Tensor,
+    /// `(batch_size, max_blocks)` physical block indices per sequence, dtype `U32`.
+    pub block_table: Tensor,
+    /// `(batch_size + 1,)` cumulative KV lengths per sequence, dtype `U32`.
+    pub seqlens_k: Tensor,
+    pub page_block_size: usize,
+}
+
+#[derive(Debug, Clone)]
+enum KvCache {
+    Contiguous(Vec<Option<(Tensor, Tensor)>>),
+    Paged(Vec<PagedKvCache>),
+}
+
 #[derive(Debug, Clone)]
 pub struct Cache {
     masks: HashMap<(usize, usize), Tensor>,
     pub use_kv_cache: bool,
-    kvs: Vec<Option<(Tensor, Tensor)>>,
+    kv_cache: KvCache,
     cos: Tensor,
     sin: Tensor,
     device: Device,
@@ -160,70 +184,110 @@ fn calculate_default_inv_freq(cfg: &Config) -> Vec<f32> {
         .collect()
 }
 
+fn rope_cos_sin(dtype: DType, config: &Config, device: &Device) -> Result<(Tensor, Tensor)> {
+    // precompute freqs_cis
+    let theta = match &config.rope_scaling {
+        None
+        | Some(Llama3RopeConfig {
+            rope_type: Llama3RopeType::Default,
+            ..
+        }) => calculate_default_inv_freq(config),
+        Some(rope_scaling) => {
+            let low_freq_wavelen =
+                rope_scaling.original_max_position_embeddings as f32 / rope_scaling.low_freq_factor;
+            let high_freq_wavelen = rope_scaling.original_max_position_embeddings as f32
+                / rope_scaling.high_freq_factor;
+
+            calculate_default_inv_freq(config)
+                .into_iter()
+                .map(|freq| {
+                    let wavelen = 2. * PI / freq;
+                    if wavelen < high_freq_wavelen {
+                        freq
+                    } else if wavelen > low_freq_wavelen {
+                        freq / rope_scaling.factor
+                    } else {
+                        let smooth = (rope_scaling.original_max_position_embeddings as f32
+                            / wavelen
+                            - rope_scaling.low_freq_factor)
+                            / (rope_scaling.high_freq_factor - rope_scaling.low_freq_factor);
+                        (1. - smooth) * freq / rope_scaling.factor + smooth * freq
+                    }
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+
+    let theta = Tensor::new(theta, device)?;
+
+    let idx_theta = Tensor::arange(0, config.max_position_embeddings as u32, device)?
+        .to_dtype(DType::F32)?
+        .reshape((config.max_position_embeddings, 1))?
+        .matmul(&theta.reshape((1, theta.elem_count()))?)?;
+    // This is different from the paper, see:
+    // https://github.com/huggingface/transformers/blob/6112b1c6442aaf7affd2b0676a1cd4eee30c45cf/src/transformers/models/llama/modeling_llama.py#L112
+    let cos = idx_theta.cos()?.to_dtype(dtype)?;
+    let sin = idx_theta.sin()?.to_dtype(dtype)?;
+    Ok((cos, sin))
+}
+
 impl Cache {
     pub fn new(use_kv_cache: bool, dtype: DType, config: &Config, device: &Device) -> Result<Self> {
-        // precompute freqs_cis
-        let theta = match &config.rope_scaling {
-            None
-            | Some(Llama3RopeConfig {
-                rope_type: Llama3RopeType::Default,
-                ..
-            }) => calculate_default_inv_freq(config),
-            Some(rope_scaling) => {
-                let low_freq_wavelen = rope_scaling.original_max_position_embeddings as f32
-                    / rope_scaling.low_freq_factor;
-                let high_freq_wavelen = rope_scaling.original_max_position_embeddings as f32
-                    / rope_scaling.high_freq_factor;
-
-                calculate_default_inv_freq(config)
-                    .into_iter()
-                    .map(|freq| {
-                        let wavelen = 2. * PI / freq;
-                        if wavelen < high_freq_wavelen {
-                            freq
-                        } else if wavelen > low_freq_wavelen {
-                            freq / rope_scaling.factor
-                        } else {
-                            let smooth = (rope_scaling.original_max_position_embeddings as f32
-                                / wavelen
-                                - rope_scaling.low_freq_factor)
-                                / (rope_scaling.high_freq_factor - rope_scaling.low_freq_factor);
-                            (1. - smooth) * freq / rope_scaling.factor + smooth * freq
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            }
-        };
-
-        let theta = Tensor::new(theta, device)?;
-
-        let idx_theta = Tensor::arange(0, config.max_position_embeddings as u32, device)?
-            .to_dtype(DType::F32)?
-            .reshape((config.max_position_embeddings, 1))?
-            .matmul(&theta.reshape((1, theta.elem_count()))?)?;
-        // This is different from the paper, see:
-        // https://github.com/huggingface/transformers/blob/6112b1c6442aaf7affd2b0676a1cd4eee30c45cf/src/transformers/models/llama/modeling_llama.py#L112
-        let cos = idx_theta.cos()?.to_dtype(dtype)?;
-        let sin = idx_theta.sin()?.to_dtype(dtype)?;
+        let (cos, sin) = rope_cos_sin(dtype, config, device)?;
         Ok(Self {
             masks: HashMap::new(),
             use_kv_cache,
-            kvs: vec![None; config.num_hidden_layers],
+            kv_cache: KvCache::Contiguous(vec![None; config.num_hidden_layers]),
             device: device.clone(),
             cos,
             sin,
         })
     }
 
-    fn mask(&mut self, seq_len: usize, index_pos: usize) -> Result<Tensor> {
-        let kv_len = index_pos + seq_len;
-        if let Some(mask) = self.masks.get(&(seq_len, kv_len)) {
-            Ok(mask.clone())
-        } else {
-            let mask = crate::utils::build_causal_mask(seq_len, index_pos, &self.device)?;
-            self.masks.insert((seq_len, kv_len), mask.clone());
-            Ok(mask)
+    /// Build a cache whose KV storage is caller-owned paged blocks (one [`PagedKvCache`] per
+    /// transformer layer) instead of the contiguous concat-and-narrow storage `new` uses.
+    ///
+    /// Rotary embeddings and causal-mask caching are shared infrastructure and behave exactly as
+    /// they do for the contiguous cache; only KV storage and the attention kernel used in
+    /// `CausalSelfAttention::forward` differ. Requires the `flash-attn` feature at call time.
+    pub fn new_paged(
+        dtype: DType,
+        config: &Config,
+        device: &Device,
+        paged_kvs: Vec<PagedKvCache>,
+    ) -> Result<Self> {
+        if paged_kvs.len() != config.num_hidden_layers {
+            candle::bail!(
+                "new_paged: expected {} paged kv caches (one per layer), got {}",
+                config.num_hidden_layers,
+                paged_kvs.len()
+            )
         }
+        let (cos, sin) = rope_cos_sin(dtype, config, device)?;
+        Ok(Self {
+            masks: HashMap::new(),
+            use_kv_cache: true,
+            kv_cache: KvCache::Paged(paged_kvs),
+            device: device.clone(),
+            cos,
+            sin,
+        })
+    }
+}
+
+fn causal_mask(
+    masks: &mut HashMap<(usize, usize), Tensor>,
+    device: &Device,
+    seq_len: usize,
+    index_pos: usize,
+) -> Result<Tensor> {
+    let kv_len = index_pos + seq_len;
+    if let Some(mask) = masks.get(&(seq_len, kv_len)) {
+        Ok(mask.clone())
+    } else {
+        let mask = crate::utils::build_causal_mask(seq_len, index_pos, device)?;
+        masks.insert((seq_len, kv_len), mask.clone());
+        Ok(mask)
     }
 }
 
@@ -288,15 +352,52 @@ impl CausalSelfAttention {
             .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
             .transpose(1, 2)?
             .contiguous()?;
-        let mut v = v
+        let v = v
             .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
             .transpose(1, 2)?;
 
         let q = self.apply_rotary_emb(&q, index_pos, cache)?;
-        let mut k = self.apply_rotary_emb(&k, index_pos, cache)?;
+        let k = self.apply_rotary_emb(&k, index_pos, cache)?;
 
-        if cache.use_kv_cache {
-            if let Some((cache_k, cache_v)) = &cache.kvs[block_idx] {
+        let y = match &mut cache.kv_cache {
+            KvCache::Paged(paged_layers) => {
+                self.forward_paged(&q, &k, &v, index_pos, &mut paged_layers[block_idx])?
+            }
+            KvCache::Contiguous(kvs) => self.forward_contiguous(
+                q,
+                k,
+                v,
+                index_pos,
+                cache.use_kv_cache,
+                &mut kvs[block_idx],
+                &mut cache.masks,
+                &cache.device,
+                b_sz,
+                seq_len,
+                hidden_size,
+            )?,
+        };
+        let y = self.o_proj.forward(&y)?;
+        Ok(y)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_contiguous(
+        &self,
+        q: Tensor,
+        mut k: Tensor,
+        mut v: Tensor,
+        index_pos: usize,
+        use_kv_cache: bool,
+        kv: &mut Option<(Tensor, Tensor)>,
+        masks: &mut HashMap<(usize, usize), Tensor>,
+        device: &Device,
+        b_sz: usize,
+        seq_len: usize,
+        hidden_size: usize,
+    ) -> Result<Tensor> {
+        if use_kv_cache {
+            if let Some((cache_k, cache_v)) = kv.as_ref() {
                 k = Tensor::cat(&[cache_k, &k], 2)?.contiguous()?;
                 v = Tensor::cat(&[cache_v, &v], 2)?.contiguous()?;
                 let k_seq_len = k.dims()[1];
@@ -320,7 +421,7 @@ impl CausalSelfAttention {
                         .contiguous()?
                 }
             }
-            cache.kvs[block_idx] = Some((k.clone(), v.clone()))
+            *kv = Some((k.clone(), v.clone()))
         }
 
         let k = self.repeat_kv(k)?;
@@ -342,7 +443,8 @@ impl CausalSelfAttention {
             let att = if seq_len == 1 {
                 att
             } else {
-                let mask = cache.mask(seq_len, index_pos)?.broadcast_as(att.shape())?;
+                let mask =
+                    causal_mask(masks, device, seq_len, index_pos)?.broadcast_as(att.shape())?;
                 masked_fill(&att, &mask, f32::NEG_INFINITY)?
             };
 
@@ -351,8 +453,98 @@ impl CausalSelfAttention {
             att.matmul(&v.contiguous()?)?.to_dtype(in_dtype)?
         };
         let y = y.transpose(1, 2)?.reshape(&[b_sz, seq_len, hidden_size])?;
-        let y = self.o_proj.forward(&y)?;
         Ok(y)
+    }
+
+    #[cfg(feature = "flash-attn")]
+    fn forward_paged(
+        &self,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        index_pos: usize,
+        paged: &mut PagedKvCache,
+    ) -> Result<Tensor> {
+        // q/k/v come in as (b_sz, heads, seq_len, head_dim); paged storage and the varlen kernel
+        // both expect a heads-last layout of (.., seq_len, heads, head_dim).
+        let (b_sz, _, seq_len, _) = q.dims4()?;
+        let q = q.transpose(1, 2)?.contiguous()?;
+        let k = k.transpose(1, 2)?.contiguous()?;
+        let v = v.transpose(1, 2)?.contiguous()?;
+        let device = q.device();
+
+        let (num_blocks, page_block_size, num_kv_heads, head_dim) = paged.key_cache.dims4()?;
+        let block_table: Vec<Vec<u32>> = paged.block_table.to_vec2()?;
+
+        let mut slot_ids = Vec::with_capacity(b_sz * seq_len);
+        for row in block_table.iter().take(b_sz) {
+            for i in 0..seq_len {
+                let pos = index_pos + i;
+                let logical_block = pos / page_block_size;
+                let offset = (pos % page_block_size) as u32;
+                let block_id = *row.get(logical_block).ok_or_else(|| {
+                    candle::Error::Msg(format!(
+                        "paged kv cache: block_table has no entry for logical block {logical_block}"
+                    ))
+                })?;
+                slot_ids.push(block_id * page_block_size as u32 + offset);
+            }
+        }
+        let slot_ids = Tensor::new(slot_ids, device)?.reshape((b_sz * seq_len, 1, 1))?;
+
+        let k_new = k.reshape((b_sz * seq_len, num_kv_heads, head_dim))?;
+        let v_new = v.reshape((b_sz * seq_len, num_kv_heads, head_dim))?;
+        let idx = slot_ids
+            .broadcast_as((b_sz * seq_len, num_kv_heads, head_dim))?
+            .contiguous()?;
+
+        let key_cache_flat =
+            paged
+                .key_cache
+                .reshape((num_blocks * page_block_size, num_kv_heads, head_dim))?;
+        key_cache_flat.scatter_set(&idx, &k_new, 0)?;
+        let value_cache_flat =
+            paged
+                .value_cache
+                .reshape((num_blocks * page_block_size, num_kv_heads, head_dim))?;
+        value_cache_flat.scatter_set(&idx, &v_new, 0)?;
+
+        let seqlens_k: Vec<u32> = paged.seqlens_k.to_vec1()?;
+        let max_seqlen_k = seqlens_k.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0) as usize;
+        let seqlens_q: Vec<u32> = (0..=b_sz as u32).map(|i| i * seq_len as u32).collect();
+        let seqlens_q = Tensor::new(seqlens_q, device)?;
+
+        let q_flat = q.reshape((b_sz * seq_len, self.num_attention_heads, self.head_dim))?;
+        let softmax_scale = 1f32 / (self.head_dim as f32).sqrt();
+        let y = candle_flash_attn::flash_attn_varlen_paged_windowed(
+            &q_flat,
+            &paged.key_cache,
+            &paged.value_cache,
+            &seqlens_q,
+            &paged.seqlens_k,
+            &paged.block_table,
+            None,
+            seq_len,
+            max_seqlen_k,
+            softmax_scale,
+            None,
+            None,
+            page_block_size,
+            None,
+        )?;
+        y.reshape((b_sz, seq_len, self.num_attention_heads * self.head_dim))
+    }
+
+    #[cfg(not(feature = "flash-attn"))]
+    fn forward_paged(
+        &self,
+        _q: &Tensor,
+        _k: &Tensor,
+        _v: &Tensor,
+        _index_pos: usize,
+        _paged: &mut PagedKvCache,
+    ) -> Result<Tensor> {
+        candle::bail!("paged kv-cache attention requires the 'flash-attn' feature")
     }
 
     fn repeat_kv(&self, x: Tensor) -> Result<Tensor> {
@@ -530,5 +722,55 @@ impl Llama {
             ln_f,
             lm_head,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tiny_config() -> Config {
+        Config {
+            hidden_size: 8,
+            intermediate_size: 16,
+            vocab_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 2,
+            num_key_value_heads: 2,
+            use_flash_attn: false,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            bos_token_id: None,
+            eos_token_id: None,
+            rope_scaling: None,
+            max_position_embeddings: DEFAULT_MAX_SEQ_LEN,
+            tie_word_embeddings: false,
+        }
+    }
+
+    #[test]
+    fn cache_new_is_contiguous_by_default() -> Result<()> {
+        let device = Device::Cpu;
+        let cache = Cache::new(true, DType::F32, &tiny_config(), &device)?;
+        assert!(matches!(cache.kv_cache, KvCache::Contiguous(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn new_paged_rejects_layer_count_mismatch() -> Result<()> {
+        let device = Device::Cpu;
+        let cfg = tiny_config();
+        // Only one PagedKvCache for a 2-layer config: must be rejected up front rather than
+        // panicking on out-of-bounds access during forward.
+        let paged = PagedKvCache {
+            key_cache: Tensor::zeros((1, 4, cfg.num_key_value_heads, 4), DType::F32, &device)?,
+            value_cache: Tensor::zeros((1, 4, cfg.num_key_value_heads, 4), DType::F32, &device)?,
+            block_table: Tensor::zeros((1, 1), DType::U32, &device)?,
+            seqlens_k: Tensor::zeros((2,), DType::U32, &device)?,
+            page_block_size: 4,
+        };
+        let err = Cache::new_paged(DType::F32, &cfg, &device, vec![paged]);
+        assert!(err.is_err());
+        Ok(())
     }
 }
