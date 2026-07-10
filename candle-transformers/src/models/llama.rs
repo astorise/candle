@@ -1602,10 +1602,10 @@ mod tests {
             Ok(Linear::from_weights(w, None))
         };
         Ok(CausalSelfAttention {
-            q_proj: new_linear(hidden_size, hidden_size)?,
-            k_proj: new_linear(kv_size, hidden_size)?,
-            v_proj: new_linear(kv_size, hidden_size)?,
-            o_proj: new_linear(hidden_size, hidden_size)?,
+            q_proj: Proj::Plain(new_linear(hidden_size, hidden_size)?),
+            k_proj: Proj::Plain(new_linear(kv_size, hidden_size)?),
+            v_proj: Proj::Plain(new_linear(kv_size, hidden_size)?),
+            o_proj: Proj::Plain(new_linear(hidden_size, hidden_size)?),
             num_attention_heads: cfg.num_attention_heads,
             num_key_value_heads: cfg.num_key_value_heads,
             head_dim: hidden_size / cfg.num_attention_heads,
