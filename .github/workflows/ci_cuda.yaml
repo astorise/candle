@@ -81,9 +81,14 @@ jobs:
         # code path in candle-transformers::models::llama never gets compiled by the
         # main step. Not every ref dispatched against this workflow (via `test_ref`)
         # defines that seam, so don't fail the whole job if it's absent.
+        #
+        # TEMPORARY DIAGNOSTIC (astorise/candle#17): --test-threads=1, same as the
+        # run that confirmed second_independent_capture_with_paged_attention_and_decode_position's
+        # repro; keeping serialized while localizing exactly which step fails via
+        # the new .context() breadcrumbs. Revert once that's answered.
         run: |
           if grep -q 'paged_attention_matches_dense_causal_attention_on_gpu' candle-transformers/src/models/llama.rs 2>/dev/null; then
-            cargo test -p candle-transformers --release --features flash-attn --lib models::llama::
+            cargo test -p candle-transformers --release --features flash-attn --lib models::llama:: -- --test-threads=1
           else
             echo "paged KV cache flash-attn seam not present on this ref, skipping"
           fi
