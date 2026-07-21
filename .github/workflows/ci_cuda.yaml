@@ -93,3 +93,16 @@ jobs:
           else
             echo "paged KV cache flash-attn seam not present on this ref, skipping"
           fi
+      - name: Test (cuda) - LoRA BGMV kernels
+        # `--features cuda` above doesn't enable candle-nn's LoRA CUDA kernels;
+        # the `lora-cuda` feature builds the candle-lora-kernels crate and routes
+        # the decode-step batched path through it, so run the lora suite with that
+        # feature to compile the kernels and check they match the reference path.
+        # Not every ref dispatched against this workflow (via `test_ref`) defines
+        # that feature, so don't fail the whole job if it's absent.
+        run: |
+          if grep -q '^lora-cuda' candle-nn/Cargo.toml 2>/dev/null; then
+            cargo test -p candle-nn --features cuda,lora-cuda --test lora
+          else
+            echo "lora-cuda feature not present on this ref, skipping"
+          fi
