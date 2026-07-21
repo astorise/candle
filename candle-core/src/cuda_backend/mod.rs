@@ -2361,7 +2361,6 @@ impl BackendStorage for CudaStorage {
         if el_count == 0 {
             return Ok(());
         }
-        let cfg = launch_config_for_num_elems(el_count)?;
         let dev = &self.device;
         let ds = SlicePtrOrNull::params_from_layout(dev, src_l)?;
         match (&self.slice, &mut dst.slice) {
@@ -2370,6 +2369,7 @@ impl BackendStorage for CudaStorage {
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
                 } else {
+                    let cfg = launch_config_for_num_elems(el_count)?;
                     let func = dev.get_or_load_func("ucopy_bf16", &kernels::UNARY)?;
                     let mut builder = func.builder();
                     barg!(builder, el_count);
@@ -2386,6 +2386,7 @@ impl BackendStorage for CudaStorage {
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
                 } else {
+                    let cfg = launch_config_for_num_elems(el_count)?;
                     let func = dev.get_or_load_func("ucopy_f16", &kernels::UNARY)?;
                     let mut builder = func.builder();
                     barg!(builder, el_count);
@@ -2402,6 +2403,7 @@ impl BackendStorage for CudaStorage {
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
                 } else {
+                    let cfg = launch_config_for_num_elems(el_count)?;
                     let func = dev.get_or_load_func("ucopy_f32", &kernels::UNARY)?;
                     let mut builder = func.builder();
                     barg!(builder, el_count);
@@ -2418,6 +2420,7 @@ impl BackendStorage for CudaStorage {
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
                 } else {
+                    let cfg = launch_config_for_num_elems(el_count)?;
                     let func = dev.get_or_load_func("ucopy_u8", &kernels::UNARY)?;
                     let mut builder = func.builder();
                     barg!(builder, el_count);
@@ -2434,6 +2437,7 @@ impl BackendStorage for CudaStorage {
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
                 } else {
+                    let cfg = launch_config_for_num_elems(el_count)?;
                     let func = dev.get_or_load_func("ucopy_u32", &kernels::UNARY)?;
                     let mut builder = func.builder();
                     barg!(builder, el_count);
@@ -2450,6 +2454,7 @@ impl BackendStorage for CudaStorage {
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
                 } else {
+                    let cfg = launch_config_for_num_elems(el_count)?;
                     let func = dev.get_or_load_func("ucopy_i16", &kernels::UNARY)?;
                     let mut builder = func.builder();
                     barg!(builder, el_count);
@@ -2466,6 +2471,7 @@ impl BackendStorage for CudaStorage {
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
                 } else {
+                    let cfg = launch_config_for_num_elems(el_count)?;
                     let func = dev.get_or_load_func("ucopy_i32", &kernels::UNARY)?;
                     let mut builder = func.builder();
                     barg!(builder, el_count);
@@ -2482,6 +2488,7 @@ impl BackendStorage for CudaStorage {
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
                 } else {
+                    let cfg = launch_config_for_num_elems(el_count)?;
                     let func = dev.get_or_load_func("ucopy_i64", &kernels::UNARY)?;
                     let mut builder = func.builder();
                     barg!(builder, el_count);
@@ -2498,6 +2505,7 @@ impl BackendStorage for CudaStorage {
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
                 } else {
+                    let cfg = launch_config_for_num_elems(el_count)?;
                     let func = dev.get_or_load_func("ucopy_f64", &kernels::UNARY)?;
                     let mut builder = func.builder();
                     barg!(builder, el_count);
@@ -2514,6 +2522,7 @@ impl BackendStorage for CudaStorage {
                 if src_l.is_contiguous() {
                     dev.memcpy_dtod(&src, &mut dst)?
                 } else {
+                    let cfg = launch_config_for_num_elems(el_count)?;
                     let func = dev.get_or_load_func("ucopy_f8e4m3", &kernels::UNARY)?;
                     let mut builder = func.builder();
                     barg!(builder, el_count);
