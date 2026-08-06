@@ -106,3 +106,16 @@ jobs:
           else
             echo "lora-cuda feature not present on this ref, skipping"
           fi
+      - name: Test (cuda) - NVFP4 ModelOpt weight source
+        # `--features cuda` above doesn't enable the nvfp4-cuda feature, which
+        # builds candle-nvfp4-kernels and exercises the device-resident
+        # Nvfp4Linear path from candle_transformers::quantized_nvfp4::cuda.
+        # Not every ref dispatched against this workflow (via `test_ref`)
+        # defines that feature, so don't fail the whole job if it's absent.
+        run: |
+          if grep -q '^nvfp4-cuda' candle-transformers/Cargo.toml 2>/dev/null; then
+            cargo test -p candle-nvfp4-kernels --features cuda
+            cargo test -p candle-transformers --features nvfp4-cuda quantized_nvfp4::
+          else
+            echo "nvfp4-cuda feature not present on this ref, skipping"
+          fi
