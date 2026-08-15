@@ -49,8 +49,12 @@ jobs:
         # continue-on-error: this step has a known OOM flake (exit 137) on this runner
         # unrelated to any specific ref's changes; don't let it block later steps that
         # target a specific crate/feature.
+        # --no-fail-fast: without it, cargo test aborts the whole invocation at the first
+        # failing test binary, so a single unrelated failure (e.g. a pre-existing, tracked
+        # regression) silently skips every test binary alphabetically after it - including
+        # this ref's own coverage. Let every binary run so failures are visible individually.
         continue-on-error: true
-        run: cargo test --features cuda
+        run: cargo test --features cuda --no-fail-fast
       - name: Test (cuda) - candle-onnx
         # Not every ref dispatched against this workflow (via `test_ref`) defines a `cuda`
         # feature on candle-onnx, so don't request one here.
