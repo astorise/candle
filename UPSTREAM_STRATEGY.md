@@ -50,23 +50,34 @@ d'idées distinctes**. Le reste est du bruit de révision.
 
 ## 3. Décisions
 
-### 3.1 Garder — 6 PR, dans cet ordre, une à la fois
+### 3.1 Garder une seule PR ouverte : #3894
 
-Classées par probabilité de merge. **N'ouvrir la suivante que quand la précédente est
-mergée ou fermée.**
+Une file de 6 PR reste une file. Après un retour qui dit « quality over quantity »,
+la seule réponse lisible est **une PR ouverte, une seule**.
 
-| # | PR | Taille | Pourquoi elle passe |
+**#3894** — conv2d im2col, 1 fichier, +5/−4. C'est le plus petit ticket d'entrée
+possible : un bug réel, un diff qu'on relit en dix secondes, aucune dépendance.
+Réécrire sa description (§5.5) et ne rien pousser d'autre.
+
+Fermer ne veut pas dire abandonner : les branches restent dans le fork, le travail
+est fait. Les cinq autres se resoumettent une par une, **chacune seulement quand la
+précédente est mergée ou fermée** :
+
+| Ordre | PR | Taille | Action |
 | --- | --- | --- | --- |
-| 1 | **#3894** conv2d im2col | 1 fichier, +5/−4 | Vrai bug, diff minimal, évident à relire |
-| 2 | **#3632** Metal SDPA mask+causal | 3 fichiers | Vrai NaN, test inclus, périmètre net |
-| 3 | **#3787** `Device::supports_qmatmul` | 2 fichiers, +61 | Petite API + test qui la vérifie |
-| 4 | **(nouvelle)** nommage f8e4m3 | ~10 fichiers, mécanique | Bug systématique, voir §3.2 |
-| 5 | **#3885** erreur kernel manquant | 4 fichiers | DX pure — retirer le bump cudarc |
-| 6 | **#3765** saturation f16/bf16 | 8 fichiers | Suite de #3717 déjà mergée |
+| 1 | **#3894** conv2d im2col | 1 fichier, +5/−4 | **Reste ouverte**, description réécrite |
+| 2 | nommage f8e4m3 | ~10 fichiers, mécanique | Nouvelle PR, extraite de #3895 — voir §3.2 |
+| 3 | #3632 Metal SDPA mask+causal | 3 fichiers | Resoumettre |
+| 4 | #3787 `Device::supports_qmatmul` | 2 fichiers, +61 | Resoumettre |
+| 5 | #3885 erreur kernel manquant | 4 fichiers | Resoumettre sans le bump cudarc |
+| 6 | #3765 saturation f16/bf16 | 8 fichiers | Resoumettre |
 
-En fin de file, si les six passent : **#3647** (propagation du device dans
-`candle-onnx`). Vrai problème — `simple_eval` force le CPU — mais 8 fichiers et ça
-touche PyO3. La laisser ouverte sans la pousser.
+**#3647** (propagation du device dans `candle-onnx`) : vrai problème — `simple_eval`
+force le CPU — mais 8 fichiers et ça touche PyO3. Fermer aussi, et ne la reconsidérer
+qu'une fois les six passées.
+
+À ce rythme, six correctifs mergés valent mieux que quarante PR ouvertes. Et si le
+premier passe, le deuxième se lit avec un a priori favorable.
 
 ### 3.2 Le bug f8e4m3 mérite sa propre PR
 
@@ -85,9 +96,9 @@ direct : `copy_strided_src` sur un tenseur F8E4M3 non contigu
 À envoyer seule, sans le fix conv1d, sans le fix conv2d, sans le changement de
 message d'erreur, sans le bump cudarc. #3895 est à fermer.
 
-### 3.3 Fermer maintenant — 35 PR
+### 3.3 Fermer maintenant — 40 PR
 
-41 ouvertes − 6 gardées = 35 à fermer. Trois motifs, un seul par PR, pas de
+41 ouvertes − 1 gardée = 40 à fermer. Quatre motifs, un seul par PR, pas de
 justification longue.
 
 **A — embarque des crates absentes d'upstream** (16) :
@@ -95,15 +106,22 @@ justification longue.
 3858, 3861, 3883
 
 **B — doublon d'une PR de la même série** (7, voir §2) :
-3789, 3811, 3821, 3838, 3869, 3729, 3895
+3729, 3789, 3811, 3821, 3838, 3869, 3895
 
 **C — trop large pour un premier contact** (12) :
 3648, 3657, 3689, 3692 (DeepSeek-V3), 3693 (Llama 4), 3721, 3762, 3794
 (dispatcher GGUF), 3818, 3827 (JSON Schema, 2 734 lignes), 3829
 (tensor-parallel), 3867 (ModelOptCheckpoint)
 
+**D — bonnes, mais à resoumettre plus tard** (5) :
+3632, 3647, 3765, 3787, 3885
+
 Un commentaire d'une ligne suffit à chaque fermeture. Ne pas argumenter, ne pas
 demander de réévaluation. La fermeture *est* le message.
+
+Ordre pratique : fermer A, B et C d'abord, puis D, puis réécrire la description
+de #3894 en dernier — pour que la seule PR restante soit aussi la dernière
+activité visible sur le dépôt.
 
 ### 3.4 Externaliser
 
@@ -146,18 +164,18 @@ revue d'upstream, et le fork peut suivre `main` sans rebase permanent.
 
 > You're right, and thanks for being direct about it.
 >
-> I've closed 35 of my open PRs: everything that carried kernel crates that only
-> exist in my fork, plus several series where I'd opened a new PR instead of
-> updating the existing branch. That work is moving to separate crates outside
-> candle.
+> I've closed 40 of my 41 open PRs. Sixteen carried kernel crates that only exist
+> in my fork; that work is moving to separate crates outside candle. Most of the
+> rest were duplicate series where I'd opened a new PR instead of updating the
+> existing branch.
 >
-> I've kept five, each isolated, rewritten short: #3894, #3632, #3787, #3885,
-> #3765. I won't open anything new until those are resolved either way.
+> I left one open: #3894, a one-line conv2d fix. I'll send the next one only once
+> that's resolved either way.
 >
 > One thing worth flagging separately: `candle-core` looks up `ucopy_f8e4m3` while
 > `unary.cu` defines `ucopy_f8_e4m3`, and `DType::as_str()` returns `f8e4m3`, so
 > every F8E4M3 CUDA kernel is unreachable. I can send that as a standalone rename
-> if it's useful.
+> once #3894 is out of the way.
 
 ### 5.2 Commentaire de fermeture (motif A)
 
@@ -172,6 +190,11 @@ revue d'upstream, et le fork peut suivre `main` sans rebase permanent.
 
 > Closing — too broad for now. I'll revisit as a smaller, isolated change if
 > there's interest.
+
+### 5.4bis Commentaire de fermeture (motif D)
+
+> Closing to trim my open queue. I still think this one stands on its own — I'll
+> resubmit it later, on its own.
 
 ### 5.5 Descriptions réécrites
 
