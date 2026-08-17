@@ -20,7 +20,8 @@ git diff --numstat $(git merge-base upstream/main upr/3770) upr/3770 | wc -l
 | PR ouvertes (auteur `astorise`) | 41 |
 | PR qui ajoutent des crates absentes d'upstream | **16** |
 | Séries redondantes | **8** |
-| PR isolées et défendables | **6** (1 laissée ouverte, 5 à resoumettre) |
+| PR isolées et défendables | **6** (1 ouverte, 5 à resoumettre) |
+| PR gardée pour collaboration active | **1** — #3838, voir §3.6 |
 | Plus grosse PR | #3770 — 15 016 lignes, 109 fichiers, 148 commits |
 
 Les crates concernées : `candle-nvfp4-kernels`, `candle-fp8-kernels`,
@@ -51,6 +52,11 @@ d'idées distinctes**. Le reste est du bruit de révision.
 
 ## 3. Décisions
 
+### 3.0 État au 17 août 2026 — deux PR ouvertes
+
+Les fermetures sont faites. Il reste **#3894** (prévu) et **#3838** (gardée en plus,
+parce qu'elle a un collaborateur actif — voir §3.6). Tout le reste est fermé.
+
 ### 3.1 Garder une seule PR ouverte : #3894
 
 Une file de 6 PR reste une file. Après un retour qui dit « quality over quantity »,
@@ -58,7 +64,7 @@ la seule réponse lisible est **une PR ouverte, une seule**.
 
 **#3894** — conv2d im2col, 1 fichier, +5/−4. C'est le plus petit ticket d'entrée
 possible : un bug réel, un diff qu'on relit en dix secondes, aucune dépendance.
-Réécrire sa description (§5.5) et ne rien pousser d'autre.
+Réécrire sa description (§5.6) et ne rien pousser d'autre.
 
 Fermer ne veut pas dire abandonner : les branches restent dans le fork, le travail
 est fait. Les cinq autres se resoumettent une par une, **chacune seulement quand la
@@ -97,17 +103,19 @@ direct : `copy_strided_src` sur un tenseur F8E4M3 non contigu
 À envoyer seule, sans le fix conv1d, sans le fix conv2d, sans le changement de
 message d'erreur, sans le bump cudarc. #3895 est à fermer.
 
-### 3.3 Fermer maintenant — 40 PR
+### 3.3 Fermées — 39 PR
 
-41 ouvertes − 1 gardée = 40 à fermer. Quatre motifs, un seul par PR, pas de
-justification longue.
+41 ouvertes − 2 gardées (#3894, #3838) = 39 fermées. Quatre motifs, un seul par PR,
+pas de justification longue.
 
 **A — embarque des crates absentes d'upstream** (16) :
 3660, 3661, 3662, 3669, 3726, 3733, 3763, 3767, 3770, 3825, 3833, 3834, 3849,
 3858, 3861, 3883
 
-**B — série redondante** (7, voir §2 et §3.4) :
-3729, 3789, 3811, 3821, 3838, 3869, 3895
+**B — série redondante** (6, voir §2 et §3.4) :
+3729, 3789, 3811, 3821, 3869, 3895
+
+*(#3838 appartenait à cette série mais reste ouverte — voir §3.6.)*
 
 **C — trop large pour un premier contact** (12) :
 3648, 3657, 3689, 3692 (DeepSeek-V3), 3693 (Llama 4), 3721, 3762, 3794
@@ -120,9 +128,7 @@ justification longue.
 Un commentaire d'une ligne suffit à chaque fermeture. Ne pas argumenter, ne pas
 demander de réévaluation. La fermeture *est* le message.
 
-Ordre pratique : fermer A, B et C d'abord, puis D, puis réécrire la description
-de #3894 en dernier — pour que la seule PR restante soit aussi la dernière
-activité visible sur le dépôt.
+Fait le 17 août 2026.
 
 ### 3.4 Le mot « doublon » est trop fort — et c'est pire que ça
 
@@ -167,6 +173,38 @@ des kernels et des couches depuis une crate tierce.
 Bénéfice direct pour Tachyon : ces crates cessent d'être bloquées par le rythme de
 revue d'upstream, et le fork peut suivre `main` sans rebase permanent.
 
+### 3.6 #3838 — l'exception, et ce qu'il faut y corriger
+
+Gardée ouverte malgré ses 3 503 lignes, et c'est justifié : c'est la seule PR du lot
+qui ait une **validation indépendante**. `@oetiker` l'a testée contre un checkpoint
+Qwen3.6-35B réel et y a trouvé trois bugs numériques :
+
+- le loader appliquait `-exp(A_log)` deux fois à `ssm_a` ;
+- la table d'angles RoPE perdait en précision aux longues positions (position 5304
+  décalée de 0,812 rad) ;
+- le tiling de broadcast Q/K répétait en interleaved au lieu de cyclique.
+
+Les trois correctifs sont dans la PR. **Aucun n'est attribué** : les cinq commits sont
+signés `Sébastien ASTORI` seul, sans trailer `Co-authored-by`. À corriger — c'est dû, et
+c'est aussi l'argument le plus fort de la PR. Une contribution de modèle validée par un
+tiers ne se lit pas du tout comme un dépôt de 3 500 lignes en solo.
+
+Trailer à utiliser (forme noreply publique, pas besoin de son adresse privée) :
+
+```
+Co-authored-by: oetiker <429279+oetiker@users.noreply.github.com>
+```
+
+**Ne pas découper la PR maintenant.** Le découpage naturel existe (le chemin quantifié —
+`quantized_qwen3_5.rs` 768 L + son exemple 322 L — face au modèle dense, 2 373 L), et
+#3865 trace déjà le MoE quantifié séparément. Mais oetiker a testé **les deux** chemins :
+découper casserait sa base de test en cours. La collaboration vaut plus que le compte de
+lignes. Le découpage se fera si le mainteneur le demande.
+
+La description actuelle (~450–500 caractères, sections « Changes » / « Tests ») **n'est
+pas** un essai généré : elle est déjà courte. Il lui manque seulement le fait le plus
+vendeur, actuellement enterré dans le fil des commentaires. Textes en §5.5.
+
 ## 4. Règles pour la suite
 
 1. **Une PR = un concept = idéalement un commit.** Si le titre contient « et » ou
@@ -190,13 +228,15 @@ revue d'upstream, et le fork peut suivre `main` sans rebase permanent.
 
 > You're right, and thanks for being direct about it.
 >
-> I've closed 40 of my 41 open PRs. Sixteen carried kernel crates that only exist
+> I've closed 39 of my 41 open PRs. Sixteen carried kernel crates that only exist
 > in my fork; that work is moving to separate crates outside candle. Most of the
-> rest were duplicate series where I'd opened a new PR instead of updating the
+> rest were overlapping series where I'd opened a new PR instead of updating the
 > existing branch.
 >
-> I left one open: #3894, a one-line conv2d fix. I'll send the next one only once
-> that's resolved either way.
+> Two are left. #3894 is a one-line conv2d fix. #3838 I kept open because @oetiker
+> has been testing it against a real Qwen3.6-35B checkpoint and found three bugs
+> in it — closing that would throw away his work, not just mine. Everything else
+> waits until those two are resolved.
 >
 > One thing worth flagging separately: `candle-core` looks up `ucopy_f8e4m3` while
 > `unary.cu` defines `ucopy_f8_e4m3`, and `DType::as_str()` returns `f8e4m3`, so
@@ -243,7 +283,27 @@ qui reste ouverte.
 > Closing to trim my open queue. I still think this one stands on its own — I'll
 > resubmit it later, on its own.
 
-### 5.5 Descriptions réécrites
+### 5.5 #3838 — créditer oetiker et remonter la validation
+
+**Réponse dans le fil**
+
+> @oetiker your three fixes are in, but I squashed them into my own commits and you
+> ended up with no attribution — sorry about that. I'll add
+> `Co-authored-by: oetiker <429279+oetiker@users.noreply.github.com>` to the commits
+> carrying them unless you'd rather I use a different address.
+
+**Description mise à jour** (remplace l'actuelle)
+
+> Adds Qwen 3.5 support: sparse-MoE feed-forward blocks and partial RoPE. Fixes #3837.
+>
+> Tested against a released Qwen3.6-35B checkpoint by @oetiker, who found and fixed
+> three numerical bugs now folded in: the loader applied `-exp(A_log)` twice to
+> `ssm_a`, the RoPE angle table lost precision at long positions (position 5304 was
+> off by 0.812 rad), and Q/K broadcast tiling repeated interleaved instead of cyclic.
+>
+> Quantized MoE is tracked separately in #3865.
+
+### 5.6 Descriptions réécrites
 
 **#3894 — Fix conv2d CUDA im2col offset for non-contiguous kernels**
 
