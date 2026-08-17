@@ -193,6 +193,16 @@ réécrire » mais « qu'est-ce que Tachyon a besoin de faire que `mistralrs-qua
 `candle-vllm` et `llguidance` ne font pas ». Si la réponse est courte, la bonne
 réponse est une couche fine par-dessus, pas une pile de plus.
 
+**Fait le 17 août 2026 : `candle-nvfp4` initialisé et peuplé.**
+[astorise/candle-nvfp4](https://github.com/astorise/candle-nvfp4) porte le code du
+fork depuis l'état de #3883 — deux crates (`candle-nvfp4` pour le chargement de
+checkpoint + dispatch, `candle-nvfp4-kernels` pour le noyau CUDA optionnel), toutes
+deux contre des versions crates.io publiées (`candle-core`/`candle-nn` 0.11,
+`float8` 0.7), sans dépendance de chemin vers le fork. `cargo test --workspace`
+passe (12/12) sur les fonctionnalités par défaut ; `nvfp4-cuda` n'a pas pu être
+testé ici faute de toolchain CUDA dans ce bac à sable. Les quatre autres crates
+« réévaluer » et `candle-lora` (à renommer) restent à traiter.
+
 ### 3.6 #3838 — l'exception, et ce qu'il faut y corriger
 
 Gardée ouverte malgré ses 3 503 lignes, et c'est justifié : c'est la seule PR du lot
