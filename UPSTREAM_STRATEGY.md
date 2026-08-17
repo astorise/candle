@@ -195,6 +195,11 @@ Trailer à utiliser (forme noreply publique, pas besoin de son adresse privée) 
 Co-authored-by: oetiker <429279+oetiker@users.noreply.github.com>
 ```
 
+**État au 17 août :** le commentaire proposant le crédit est posté sur la PR. Les cinq
+commits ne portent **toujours pas** le trailer et oetiker n'a pas encore répondu. Tant
+que c'est le cas, dire « offered him co-authorship » et non « credited him » — le
+mainteneur peut vérifier l'historique.
+
 **Ne pas découper la PR maintenant.** Le découpage naturel existe (le chemin quantifié —
 `quantized_qwen3_5.rs` 768 L + son exemple 322 L — face au modèle dense, 2 373 L), et
 #3865 trace déjà le MoE quantifié séparément. Mais oetiker a testé **les deux** chemins :
@@ -226,22 +231,22 @@ vendeur, actuellement enterré dans le fil des commentaires. Textes en §5.5.
 
 ### 5.1 Réponse au mainteneur
 
-> You're right, and thanks for being direct about it.
+> You're right, and thanks for being direct.
 >
 > I've closed 39 of my 41 open PRs. Sixteen carried kernel crates that only exist
-> in my fork; that work is moving to separate crates outside candle. Most of the
+> in my fork — that work is moving to separate crates outside candle. Most of the
 > rest were overlapping series where I'd opened a new PR instead of updating the
-> existing branch.
+> branch.
 >
-> Two are left. #3894 is a one-line conv2d fix. #3838 I kept open because @oetiker
-> has been testing it against a real Qwen3.6-35B checkpoint and found three bugs
-> in it — closing that would throw away his work, not just mine. Everything else
-> waits until those two are resolved.
+> Two are left. #3894 is a one-line conv2d fix. #3838 I kept because @oetiker has
+> been testing it against a real Qwen3.6-35B checkpoint on Metal and found three
+> numerical bugs; his fixes are in and I've offered him co-authorship on the
+> commits carrying them. Nothing new from me until both are resolved.
 >
-> One thing worth flagging separately: `candle-core` looks up `ucopy_f8e4m3` while
-> `unary.cu` defines `ucopy_f8_e4m3`, and `DType::as_str()` returns `f8e4m3`, so
-> every F8E4M3 CUDA kernel is unreachable. I can send that as a standalone rename
-> once #3894 is out of the way.
+> Separately, in case it's useful: `candle-core` looks up `ucopy_f8e4m3` while
+> `unary.cu` defines `ucopy_f8_e4m3` (`DType::as_str()` returns `"f8e4m3"`), so
+> every F8E4M3 CUDA kernel is unreachable. Happy to send that as a standalone
+> rename.
 
 ### 5.2 Commentaire de fermeture (motif A)
 
