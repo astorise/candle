@@ -19,8 +19,8 @@ git diff --numstat $(git merge-base upstream/main upr/3770) upr/3770 | wc -l
 | --- | --- |
 | PR ouvertes (auteur `astorise`) | 41 |
 | PR qui ajoutent des crates absentes d'upstream | **16** |
-| Grappes de doublons | **8** |
-| PR réellement isolées et défendables | **6** |
+| Séries redondantes | **8** |
+| PR isolées et défendables | **6** (1 laissée ouverte, 5 à resoumettre) |
 | Plus grosse PR | #3770 — 15 016 lignes, 109 fichiers, 148 commits |
 
 Les crates concernées : `candle-nvfp4-kernels`, `candle-fp8-kernels`,
@@ -28,11 +28,12 @@ Les crates concernées : `candle-nvfp4-kernels`, `candle-fp8-kernels`,
 `candle-lora-kernels`. Aucune n'existe upstream. C'est exactement le point
 soulevé par le mainteneur, et il concerne 39 % des PR ouvertes.
 
-## 2. Les grappes de doublons
+## 2. Les séries redondantes
 
-C'est le problème le plus coûteux pour le mainteneur, et le plus facile à corriger :
-à chaque révision, une nouvelle PR a été ouverte au lieu de pousser sur la branche
-existante.
+C'est le problème le plus coûteux pour le mainteneur : à chaque révision, une nouvelle
+PR a été ouverte au lieu de pousser sur la branche existante. Attention au vocabulaire —
+seules les lignes marquées `⊂` sont des inclusions strictes vérifiées ; les autres sont
+des branches **divergentes** sur les mêmes fichiers (voir §3.4).
 
 | Sujet | PR | Constat |
 | --- | --- | --- |
@@ -43,7 +44,7 @@ existante.
 | LoRA | 3689, 3762, 3763, 3767, 3770 | Même pile, ré-empilée à chaque fois |
 | IncrementalDecoder | 3789, 3811 | Diff entre les deux : 29 lignes ajoutées, 99 supprimées, 1 fichier |
 | Quantification | 3660, 3661, 3662 | Chacune ré-ajoute les crates kernels de la précédente |
-| CUDA récent | 3885 ⊂ 3895, 3894 ⊂ 3895 | #3895 empaquette 5 changements sans rapport |
+| CUDA récent | 3885, 3894, 3895 | #3895 réimplémente les deux et empaquette 5 changements sans rapport |
 
 Vu de la file d'attente du mainteneur, 41 PR représentent en réalité **une douzaine
 d'idées distinctes**. Le reste est du bruit de révision.
@@ -105,7 +106,7 @@ justification longue.
 3660, 3661, 3662, 3669, 3726, 3733, 3763, 3767, 3770, 3825, 3833, 3834, 3849,
 3858, 3861, 3883
 
-**B — doublon d'une PR de la même série** (7, voir §2) :
+**B — série redondante** (7, voir §2 et §3.4) :
 3729, 3789, 3811, 3821, 3838, 3869, 3895
 
 **C — trop large pour un premier contact** (12) :
@@ -123,7 +124,32 @@ Ordre pratique : fermer A, B et C d'abord, puis D, puis réécrire la descriptio
 de #3894 en dernier — pour que la seule PR restante soit aussi la dernière
 activité visible sur le dépôt.
 
-### 3.4 Externaliser
+### 3.4 Le mot « doublon » est trop fort — et c'est pire que ça
+
+Vérification faite (`git merge-base --is-ancestor` + diff bidirectionnel entre chaque
+paire), **aucune PR du motif B n'est un sur-ensemble ni un ancêtre git d'une autre.**
+Ce ne sont pas des révisions successives d'une même branche : ce sont des branches
+**divergentes** sur les mêmes fichiers.
+
+| Paire | Diff X → Y | Containment |
+| --- | --- | --- |
+| 3838 → 3869 | +246 / −11, 2 fichiers | non (le plus proche) |
+| 3789 → 3811 | +29 / −99, 1 fichier | non |
+| 3729 → 3733 | +10 261 / −240, 87 fichiers | non |
+| 3821 → 3838 | +808 / −670, 4 fichiers | non |
+| 3894 → 3895 | +272 / −117, 18 fichiers | non |
+
+Conséquence pratique : **il n'existe pas de version canonique** de Qwen 3.5, du CUDA
+graph ni de l'IncrementalDecoder. Quatre PR Qwen 3.5, quatre `qwen3_5.rs` différents,
+et #3821 est la seule à porter `quantized_lm.rs`. C'est un problème plus sérieux qu'un
+simple doublon : avant d'externaliser, il faut choisir une version de référence par
+sujet et jeter les autres.
+
+Conséquence pour les commentaires de fermeture : **ne citer aucune PR sœur**, puisque
+toutes ferment aussi. Envoyer le mainteneur vers une PR fermée est pire que de ne rien
+dire. Les textes exacts sont en §5.3.
+
+### 3.5 Externaliser
 
 Le mainteneur l'a demandé explicitement. Rien de tout ça n'exige de modification
 d'upstream : `CustomOp1/2/3`, le trait `Module` et `VarBuilder` suffisent à brancher
@@ -182,9 +208,30 @@ revue d'upstream, et le fork peut suivre `main` sans rebase permanent.
 > Closing — this carries kernel crates that don't exist upstream. Moving it to a
 > separate crate.
 
-### 5.3 Commentaire de fermeture (motif B)
+### 5.3 Commentaires de fermeture (motif B) — un par série
 
-> Closing as a duplicate of #<n>, which covers the same files.
+Ne citer aucune PR sœur : elles ferment toutes. La seule référence utile est #3894,
+qui reste ouverte.
+
+**#3821, #3838, #3869** — série Qwen 3.5
+
+> Closing — I opened four overlapping PRs for Qwen 3.5 support instead of iterating
+> on one branch. Closing all four; this work is moving to a separate crate.
+
+**#3729** — série CUDA graph
+
+> Closing — I opened three overlapping PRs for CUDA graph capture instead of
+> iterating on one branch. Closing all three; this work is moving to a separate crate.
+
+**#3789, #3811** — série IncrementalDecoder
+
+> Closing — these two PRs are divergent branches of the same change. Closing both;
+> this work is moving to a separate crate.
+
+**#3895** — PR fourre-tout
+
+> Closing — this bundles five unrelated changes (cudarc bump, error messages, f8e4m3
+> rename, conv1d and conv2d fixes). I'm sending them separately; #3894 is the first.
 
 ### 5.4 Commentaire de fermeture (motif C)
 
