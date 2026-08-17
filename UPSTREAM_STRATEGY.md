@@ -155,23 +155,43 @@ Conséquence pour les commentaires de fermeture : **ne citer aucune PR sœur**, 
 toutes ferment aussi. Envoyer le mainteneur vers une PR fermée est pire que de ne rien
 dire. Les textes exacts sont en §5.3.
 
-### 3.5 Externaliser
+### 3.5 Externaliser — après vérification de l'écosystème
 
 Le mainteneur l'a demandé explicitement. Rien de tout ça n'exige de modification
 d'upstream : `CustomOp1/2/3`, le trait `Module` et `VarBuilder` suffisent à brancher
-des kernels et des couches depuis une crate tierce.
+des kernels et des couches depuis une crate tierce. Le précédent existe chez HF
+eux-mêmes : `huggingface/candle-flash-attn-v1` et `michaelfeil/candle-flash-attn-v3`
+sont des dépôts séparés.
 
-| Crate à créer | Contenu | PR remplacées |
-| --- | --- | --- |
-| `tachyon-nvfp4` | `candle-nvfp4-kernels` + `quantized_nvfp4` | 3825, 3833, 3849, 3858, 3861, 3883 |
-| `tachyon-lora` | kernels BGMV, `LoraLinear`, batching hétérogène | 3689, 3762, 3763, 3767, 3770 |
-| `tachyon-quant` | GPTQ / AWQ / FP8 par blocs | 3660, 3661, 3662 |
-| `tachyon-attn` | FlashInfer, CUDA graph, paged attention CPU/Metal | 3657, 3669, 3721, 3726, 3729, 3733 |
-| `tachyon-models` | qwen3_5, deepseek_v3, llama4 | 3692, 3693, 3821, 3834, 3838, 3869 |
-| `tachyon-decoding` | contraintes JSON Schema, `IncrementalDecoder` | 3789, 3811, 3827 |
+**Vérification faite le 17 août 2026** (crates.io + GitHub). Les six noms sont libres
+sur crates.io, mais ça ne dit rien de l'existant :
 
-Bénéfice direct pour Tachyon : ces crates cessent d'être bloquées par le rythme de
-revue d'upstream, et le fork peut suivre `main` sans rebase permanent.
+| Dépôt créé | crates.io | Collision / concurrent établi | Verdict |
+| --- | --- | --- | --- |
+| `candle-nvfp4` | libre | `float4` (700 k dl) fait MXFP4, pas NVFP4 ; mistral.rs ne fait pas NVFP4 | **Garder** — seul créneau réellement ouvert |
+| `candle-lora` | libre | **`EricLBuehler/candle-lora` 175 ⭐, même nom, même objet, maintenu (juil. 2026)** ; + `jammi-lora` publié ; + LoRA/X-LoRA dans mistral.rs | **Renommer ou abandonner** |
+| `candle-quant` | libre | `mistralrs-quant` 179 k dl — GPTQ, AWQ, HQQ, FP8, BNB, ISQ | Réévaluer |
+| `candle-attn` | libre | `candle-vllm` 713 ⭐ + `mistralrs-paged-attn` 73 k dl ; `EricLBuehler/candle_graphs` pour les CUDA graphs | Réévaluer |
+| `candle-models` | libre | `candle-transformers` upstream, 3 M dl — c'est littéralement ce crate | Garder en interne seulement |
+| `candle-decoding` | libre | `llguidance` 988 k dl (guidance-ai) + `outlines-core` + `EricLBuehler/candle-sampling` | Réévaluer |
+
+**Le point dur : `candle-lora`.** Le nom est libre sur crates.io uniquement parce
+qu'Eric Buehler n'a jamais publié le sien — son `Cargo.toml` déclare bien
+`name = "candle-lora"`. Publier sous ce nom reviendrait à prendre celui d'un projet
+connu et vivant. Buehler n'est pas un inconnu de l'écosystème : mistral.rs (7 600 ⭐)
+est à lui, et **candle lui-même dépend de sa crate `float8`** (`candle-core/src/dtype.rs`
+fait `use float8::F8E4M3`). Juste après un retour sur la précipitation, c'est le
+signal à ne pas envoyer.
+
+**Ce qui reste défendable.** NVFP4 est le seul sujet où personne n'est installé :
+mistral.rs annonce GGUF/GPTQ/AWQ/HQQ/FP8/BNB mais pas NVFP4, et `float4` couvre
+MXFP4, un format voisin mais distinct. C'est là que le travail du fork a une valeur
+propre plutôt qu'une redite.
+
+Pour les quatre « réévaluer », la question honnête n'est pas « est-ce que je peux le
+réécrire » mais « qu'est-ce que Tachyon a besoin de faire que `mistralrs-quant`,
+`candle-vllm` et `llguidance` ne font pas ». Si la réponse est courte, la bonne
+réponse est une couche fine par-dessus, pas une pile de plus.
 
 ### 3.6 #3838 — l'exception, et ce qu'il faut y corriger
 
